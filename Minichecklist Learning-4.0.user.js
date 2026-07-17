@@ -4,7 +4,6 @@
 // @version      4.0
 // @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding Hours (barra + dashboard + CSV, janela 05:30). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
 // @author       ladislke
-// @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
 // @match        *://*/*
 // @match        file:///*
 // @run-at       document-idle
@@ -202,7 +201,7 @@
     function toggleShift() { const c = ensureCycle(); c.shift = (c.shift === 'day') ? 'night' : 'day'; setCycle(c); warnedIds = {}; beepedIds = {}; }
 
     // ── Estado atual ─────────────────────────────────────────────────────
-    let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {};
+    let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {}, listFilter = '';
     let audioCtx = null, centered = false, setupPostponed = false, lastListSig = '';
     // Lembrete de hora cheia: guarda a última hora (0–23) em que o menu abriu sozinho,
     // para abrir só 1x por hora quando o overlay está no modo círculo (menu fechado).
@@ -296,7 +295,7 @@
     }
 
     // ── Elementos ────────────────────────────────────────────────────────
-    let fab, fabWater, fabPct, menu, listEl, hdPct, hdSub, hdSubTxt, take, modeBtn, setupEl, helpEl;
+    let fab, fabWater, fabPct, menu, listEl, hdPct, hdSub, hdSubTxt, take, modeBtn, setupEl, helpEl, searchInput;
 
     function buildUI() {
         const sz = FAB_SIZE;
@@ -369,6 +368,18 @@
         modeBtn.addEventListener('click', () => { setMode(getMode() === 'alert' ? 'silent' : 'alert'); if (getMode() === 'silent') hideTakeover(); render(); });
         modeBar.appendChild(modeBtn);
         menu.appendChild(modeBar);
+
+        // Campo de busca: filtra as tarefas da lista pelo texto digitado.
+        const searchBar = el('div', 'display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #2b3d4f;');
+        searchBar.appendChild(el('span', 'flex:none;font-size:12px;opacity:.8;', '🔎'));
+        searchInput = el('input', 'flex:1;min-width:0;background:#12202e;border:1px solid #52708c;color:#e6edf3;border-radius:8px;padding:6px 10px;font-size:12px;outline:none;' + FF);
+        searchInput.type = 'text';
+        searchInput.placeholder = 'Pesquisar tarefa…';
+        searchInput.setAttribute('aria-label', 'Pesquisar tarefa na lista');
+        searchInput.addEventListener('input', () => { listFilter = searchInput.value.trim().toLowerCase(); lastListSig = ''; render(); });
+        searchInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { searchInput.value = ''; listFilter = ''; lastListSig = ''; render(); } });
+        searchBar.appendChild(searchInput);
+        menu.appendChild(searchBar);
 
         listEl = el('div', 'max-height:52vh;overflow:auto;padding:6px;');
         menu.appendChild(listEl);
@@ -614,7 +625,7 @@
     // Nessa página o Onboarding Hours fica SEMPRE ativo (independe do fluxo escolhido).
     function onFclmOnbReport() {
         const u = location.href;
-        return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(u) && /processId=(1002986|1002960)/.test(u);
+        return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(u) && /processId=1002986/.test(u);
     }
 
     // ── 100% concluído: centraliza o círculo no topo + comemoração ───────
@@ -717,13 +728,20 @@
 
         if (menuOpen) {
             hdPct.textContent = s.pct + '% (' + s.doneCount + '/' + s.total + ')';
+            // Filtra pelo texto do campo de busca (por rótulo da tarefa).
+            const visible = listFilter ? s.items.filter(i => i.label.toLowerCase().includes(listFilter)) : s.items;
             // Só reconstrói a lista quando o estado visível muda (evita churn de DOM a cada tick).
-            const sig = s.items.map(i => i.id + (i.done ? 'D' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
+            const sig = 'f=' + listFilter + '|' + visible.map(i => i.id + (i.done ? 'D' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
                 + (i.overdue ? 'o' : i.warning ? 'w' : i.alert ? 'a' + i.secsLeft : '')).join('|');
             if (sig !== lastListSig || listEl.childElementCount === 0) {
                 lastListSig = sig;
                 listEl.textContent = '';
-                s.items.forEach(i => listEl.appendChild(buildRow(i)));
+                if (!visible.length) {
+                    listEl.appendChild(el('div', 'padding:14px 10px;text-align:center;color:#8aa1b6;font-size:12px;',
+                        listFilter ? 'Nenhuma tarefa encontrada para “' + searchInput.value.trim() + '”' : 'Sem tarefas'));
+                } else {
+                    visible.forEach(i => listEl.appendChild(buildRow(i)));
+                }
             }
         } else { lastListSig = ''; }
         setMenuVisible(menuOpen);
