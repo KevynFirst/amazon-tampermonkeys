@@ -454,8 +454,6 @@
         const exceeding = [];
         r.trainings.forEach(t => { const lim = getLimit(t); t.people.forEach(p => { if (p.total != null && p.total > lim) exceeding.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total, limit: lim }); }); });
         exceeding.sort((a, b) => (b.total - b.limit) - (a.total - a.limit));
-        const cmp = compareTitles(r);
-        const faltantes = r.allPeople.map(p => ({ p, falta: cmp.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
         const badges = badgeEntries(r);
         // Cabeçalho reflete a JANELA SELECIONADA no filtro (não a hora atual).
         let msg = modeLabel(currentFilter.mode) + ' *Learning Hours*\n:calendar: _' + windowPreviewText(currentFilter) + '_\n';
@@ -466,11 +464,6 @@
             const by = groupByManager(exceeding, e => slackCat(e.title));
             const cats = Object.keys(by).sort((a, b) => { const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b); });
             cats.forEach(cat => { msg += '> *' + cat + '*\n'; by[cat].sort((a, b) => (b.total || 0) - (a.total || 0)).forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; }); });
-        }
-        if (faltantes.length) {
-            msg += '\n🔁 *Faltar Logar (' + faltantes.length + ')*\n';
-            const byT = {}; faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); }));
-            Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => { msg += '> *' + t + '*\n'; byT[t].forEach(p => { msg += '>  • ' + slackName(p.name, p.link) + (p.manager ? ' (' + p.manager + ')' : '') + '\n'; }); });
         }
         if (badges.length) {
             msg += '\n🪪 *Ajuste de Badge (' + badges.length + ')*\n';
