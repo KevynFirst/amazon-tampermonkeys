@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      4.0
 // @description  Overlay fixo na página functionRollup do FCLM (GRU5): mostra as horas de Learning/Onboarding por associado — quem está acima do limite de horas e quem precisa ser logado em outra função. Filtro por horas, por gestor, exportação CSV e envio ao Slack. Versão só-visibilidade (sem checklist), para quem não é do time de Learning.
-// @author       ladislke
+// @author       caramigo
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
 // @match        https://fclm-portal.amazon.com/reports/functionRollup*
 // @run-at       document-idle
@@ -430,56 +430,54 @@
     // ── Envio para o Slack ───────────────────────────────────────────────
     const SLACK_KEY = 'lh_slack_webhook';
     function slackName(name, link) { return link ? '<' + link + '|' + name + '>' : '*' + name + '*'; }
-    function buildSlackText(r) {
-        // SEMPRE só quem passou do limite (ignora o toggle "mostrar todos"), subdividido por processo.
-        const over = [];
-        r.trainings.forEach(t => {
-            const lim = getLimit(t); const pr = procOf(t);
-            t.people.forEach(p => { if (p.total != null && p.total > lim) over.push({ name: p.name, link: p.link, manager: p.manager, title: t.title, total: p.total, limit: lim, procName: pr.name }); });
-        });
-        const now = new Date();
-        const dLbl = String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear();
-        let msg = ':bar_chart: *Learning Hours* — ' + dLbl + '\n\n';
-        msg += ':alarm_clock: *Acima do limite (' + over.length + ')*\n';
-        if (over.length) {
-            const procOrder = PROCESSES.map(p => p.name);
-            const byProc = groupByManager(over, e => e.procName);
-            Object.keys(byProc).sort((a, b) => procOrder.indexOf(a) - procOrder.indexOf(b)).forEach(pn => {
-                msg += '> *' + pn + '*\n';
-                const byT = groupByManager(byProc[pn], e => e.title || 'Sem função');
-                Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(tn => {
-                    const lim = byT[tn][0] && byT[tn][0].limit;
-                    msg += '>  _' + tn + '_ (limite ' + lim + 'h)\n';
-                    byT[tn].forEach(e => { msg += '>   • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; });
-                });
-            });
-        } else { msg += '> Ninguém acima do limite :white_check_mark:\n'; }
-        // Ajuste de Badge (quem passou de badgeLimit()h), subdividido por processo.
-        const badges = badgeEntries(r);
-        msg += '\n:identification_card: *Ajuste de Badge — acima de ' + badgeLimit() + 'h (' + badges.length + ')*\n';
-        if (badges.length) {
-            const order = PROCESSES.map(p => p.name);
-            const byP = groupByManager(badges, e => e.procName || 'Sem processo');
-            Object.keys(byP).sort((a, b) => order.indexOf(a) - order.indexOf(b)).forEach(pn => {
-                msg += '> *' + pn + '*\n';
-                byP[pn].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h* _' + e.title + '_' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; });
-            });
-        } else { msg += '> Ninguém acima de ' + badgeLimit() + 'h :white_check_mark:\n'; }
-        return msg;
+    // Categorias "amigáveis" p/ dividir as horas.
+    function slackCat(title) {
+        if (/general fc training/i.test(title)) return 'Horas de onboarding';
+        if (/fc safety tour/i.test(title)) return 'Tour';
+        if (/ambassador/i.test(title)) return 'Embaixadores';
+        if (/training/i.test(title)) return 'Em treinamento';
+        return title;
     }
-    function _unusedPrecisaLogar(r) {
-        const cmpTitles = compareTitles(r);
-        const faltantes = r.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
-        let msg = '';
-        msg += '\n:repeat: *Precisa logar em outro (' + faltantes.length + ')*\n';
+    function slackObs() {
+        const lim = name => { const c = TRAININGS.find(x => x.name === name); return c ? trainingLimit(c) : '?'; };
+        const trnCfg = TRAININGS.find(c => c.proc !== 'onb' && /training/i.test(c.name));
+        const ambCfg = TRAININGS.find(c => /ambassador/i.test(c.name));
+        const parts = [];
+        parts.push('Horas de onboarding (General FC Training) = ' + lim('General FC Training') + 'h');
+        parts.push('Tour (FC Safety Tour) = ' + lim('FC Safety Tour') + 'h');
+        if (trnCfg) parts.push('Em treinamento (todos com Training) = ' + trainingLimit(trnCfg) + 'h');
+        if (ambCfg) parts.push('Embaixadores (todos com Ambassador) = ' + trainingLimit(ambCfg) + 'h');
+        return parts.join(' · ');
+    }
+    function buildSlackText(r) {
+        // Acima do limite: SEMPRE só quem passou (ignora "mostrar todos").
+        const exceeding = [];
+        r.trainings.forEach(t => { const lim = getLimit(t); t.people.forEach(p => { if (p.total != null && p.total > lim) exceeding.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total, limit: lim }); }); });
+        exceeding.sort((a, b) => (b.total - b.limit) - (a.total - a.limit));
+        const cmp = compareTitles(r);
+        const faltantes = r.allPeople.map(p => ({ p, falta: cmp.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
+        const badges = badgeEntries(r);
+        // Cabeçalho reflete a JANELA SELECIONADA no filtro (não a hora atual).
+        let msg = modeLabel(currentFilter.mode) + ' *Learning Hours*\n:calendar: _' + windowPreviewText(currentFilter) + '_\n';
+        // Cada seção só aparece quando TEM dados.
+        if (exceeding.length) {
+            msg += '\n⏰ *Acima da hora limite (' + exceeding.length + ')*\n';
+            const CAT_ORDER = ['Horas de onboarding', 'Tour', 'Em treinamento', 'Embaixadores'];
+            const by = groupByManager(exceeding, e => slackCat(e.title));
+            const cats = Object.keys(by).sort((a, b) => { const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b); });
+            cats.forEach(cat => { msg += '> *' + cat + '*\n'; by[cat].sort((a, b) => (b.total || 0) - (a.total || 0)).forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; }); });
+        }
         if (faltantes.length) {
-            const byT = {};
-            faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); }));
-            Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => {
-                msg += '> *' + t + '*\n';
-                byT[t].forEach(p => { msg += '>  • ' + slackName(p.name, p.link) + (p.manager ? ' (' + p.manager + ')' : '') + '\n'; });
-            });
-        } else { msg += '> Todos presentes em todos :white_check_mark:\n'; }
+            msg += '\n🔁 *Faltar Logar (' + faltantes.length + ')*\n';
+            const byT = {}; faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); }));
+            Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => { msg += '> *' + t + '*\n'; byT[t].forEach(p => { msg += '>  • ' + slackName(p.name, p.link) + (p.manager ? ' (' + p.manager + ')' : '') + '\n'; }); });
+        }
+        if (badges.length) {
+            msg += '\n🪪 *Ajuste de Badge (' + badges.length + ')*\n';
+            const by = groupByManager(badges, e => e.manager);
+            Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { msg += '> *' + mgr + '*\n'; by[mgr].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + (e.total || 0).toFixed(2) + 'h* (' + e.title + ')\n'; }); });
+        }
+        msg += '\n_Obs.: ' + slackObs() + '_';
         return msg;
     }
     function sendSlack(r) {
