@@ -2,7 +2,7 @@
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
 // @version      4.0
-// @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding Hours (barra + dashboard + CSV, janela 05:30). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
+// @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. No fluxo Onboarding a janela é automática pelo turno; na página fixa do functionRollup há filtro de janela selecionável (Dia/Noite/06→05/Dia todo + data). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
 // @author       ladislke
 // @match        *://*/*
 // @match        file:///*
@@ -621,11 +621,11 @@
         else { fadeOut(menu, 140, () => { if (!menuVisible) menu.style.display = 'none'; }); }
     }
 
-    // Está na página do relatório functionRollup do FCLM (processId 1002986)?
-    // Nessa página o Onboarding Hours fica SEMPRE ativo (independe do fluxo escolhido).
+    // Página fixa do FCLM: QUALQUER relatório functionRollup (o painel puxa todos os
+    // processos, igual ao Learning Hours). Nela o painel fica SEMPRE ativo (independe do fluxo)
+    // e ganha o filtro de janela selecionável.
     function onFclmOnbReport() {
-        const u = location.href;
-        return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(u) && /processId=1002986/.test(u);
+        return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(location.href);
     }
 
     // ── 100% concluído: centraliza o círculo no topo + comemoração ───────
@@ -685,8 +685,8 @@
         fabPct.textContent = s.pct + '%';
         if (s.overdue.length && mode === 'alert') startPulse(fab); else stopPulse(fab);
 
-        // Onboarding Hours (barra + dashboard): ativo quando o fluxo é Onboarding OU
-        // sempre que estiver na página do relatório functionRollup do FCLM (processId 1002986).
+        // Onboarding/Learning Hours (barra + dashboard): ativo quando o fluxo é Onboarding OU
+        // sempre que estiver em qualquer relatório functionRollup do FCLM (painel fixo).
         if (onbModule) {
             const onbActive = onFclmOnbReport() || (!s.needSetup && /^onb/.test(s.selection || ''));
             if (onbActive) onbModule.enable(); else onbModule.disable();
@@ -761,7 +761,7 @@
     function createOnbModule() {
         const C = {
             dark: '#232F3E', darker: '#131921', hover: '#37475A', accent: '#FF9900',
-            gold: '#FEBD69', blue: '#4A86C8', grey: '#607D8B', red: '#CC0000',
+            gold: '#FEBD69', blue: '#4A86C8', navy: '#12395F', grey: '#607D8B', red: '#CC0000',
             amber: '#E88B00', green: '#27AE60', white: '#FFFFFF', light: '#F7F7F7', border: '#E8E8E8',
             headerGrad: 'linear-gradient(135deg,#2C3E50 0%,#232F3E 55%,#131921 100%)',
             btnGrad: 'linear-gradient(145deg,#37475A 0%,#232F3E 100%)',
@@ -779,51 +779,148 @@
         const LEARN_PROCESS = '1002960';   // relatório de Learning (confirme o processId)
         const LEARN_FN = '4300006689';     // função "Learning"
         const REPORT_LINK = 'https://fclm-portal.amazon.com/reports/functionRollup?reportFormat=HTML&warehouseId=GRU5&processId=1002986';
-        const ALLOWED_FN = [
-            { id: '4300018945', re: /fc safety tour/i },
-            { id: '4300006671', re: /general fc training/i },
-            { id: '4300018942', re: /safety school/i },
-            { id: LEARN_FN, re: null },   // Learning: só pelo fnId exato (não pega LN_LEARNING_STAFF)
+        const ICQA_PROCESS = '1003030';    // relatório de ICQA (ICQA Ambassador + ICQA Training)
+        // Página fixa: qualquer relatório functionRollup do FCLM (aqui vale o filtro selecionável).
+        function onFclmReport() { return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(location.href); }
+
+        // ── Processos (abas de "Mais detalhes") — assimilado do Learning Hours ──
+        const PROCESSES = [
+            { key: 'onb',  name: 'On Boarding', processId: ONB_PROCESS },
+            { key: 'adm',  name: 'Admin/HR/IT', processId: LEARN_PROCESS },
+            { key: 'icqa', name: 'ICQA',        processId: ICQA_PROCESS },
+            { key: 'cret', name: 'C-Returns',   processId: '1003058' },
+            { key: 'sort', name: 'Sort',        processId: '1003050' },
+            { key: 'pick', name: 'Pick',        processId: '1003049' },
+            { key: 'pack', name: 'Pack',        processId: '1002994' },
+            { key: 'ship', name: 'Ship',        processId: '1720696536911' },
+            { key: 'stow', name: 'Stow',        processId: '1003017' },
+            { key: 'tin',  name: 'Transfer In', processId: '1003020' },
+            { key: 'recv', name: 'Receive',     processId: '1003033' },
+            { key: 'vret', name: 'V-Returns',   processId: '1003059' },
+            { key: 'prep', name: 'Prep',        processId: '1003048' },
+            { key: 'errado', name: 'Logado errado', virtual: true },   // General FC Training nos Dias 2/3
+            { key: 'badge', name: 'Ajuste de Badge', virtual: true },
         ];
-        function isAllowedTraining(t) { return ALLOWED_FN.some(a => t.fnId === a.id || (a.re && a.re.test(t.title))); }
+        // Limite de horas POR TREINAMENTO (configurável e persistente). Fonte única de funções.
+        const TRAININGS = [
+            { fnId: '4300018945', re: /fc safety tour/i, name: 'FC Safety Tour', proc: 'onb', limitKey: 'fclm_onb_lim_fcsafetytour', defLimit: 1 },
+            { fnId: '4300006671', re: /general fc training|fc training/i, name: 'General FC Training', proc: 'onb', limitKey: 'fclm_onb_lim_fctraining', defLimit: 9 },
+            { fnId: '4300018942', re: /safety school/i, name: 'Safety School', proc: 'onb', limitKey: 'fclm_onb_lim_safetyschool', defLimit: 2 },
+            { re: /icqa ambassador/i, name: 'ICQA Ambassador', proc: 'icqa', limitKey: 'fclm_onb_lim_icqaamb', defLimit: 11 },
+            { re: /icqa training/i, name: 'ICQA Training', proc: 'icqa', limitKey: 'fclm_onb_lim_icqatrn', defLimit: 4 },
+            { re: /c-?returns ambassador/i, name: 'C-Returns Ambassador', proc: 'cret', limitKey: 'fclm_onb_lim_cretamb', defLimit: 11 },
+            { re: /c-?returns training/i, name: 'C-Returns Training', proc: 'cret', limitKey: 'fclm_onb_lim_crettrn', defLimit: 4 },
+            { re: /sort ambassador/i, name: 'Sort Ambassador', proc: 'sort', limitKey: 'fclm_onb_lim_sortamb', defLimit: 11 },
+            { re: /sort training/i, name: 'Sort Training', proc: 'sort', limitKey: 'fclm_onb_lim_sorttrn', defLimit: 4 },
+            { re: /pick ambassador/i, name: 'Pick Ambassador', proc: 'pick', limitKey: 'fclm_onb_lim_pickamb', defLimit: 11 },
+            { re: /pick training/i, name: 'Pick Training', proc: 'pick', limitKey: 'fclm_onb_lim_picktrn', defLimit: 4 },
+            { re: /pack ambassador/i, name: 'Pack Ambassador', proc: 'pack', limitKey: 'fclm_onb_lim_packamb', defLimit: 11 },
+            { re: /pack training/i, name: 'Pack Training', proc: 'pack', limitKey: 'fclm_onb_lim_packtrn', defLimit: 4 },
+            { re: /ship ambassador/i, name: 'Ship Ambassador', proc: 'ship', limitKey: 'fclm_onb_lim_shipamb', defLimit: 11 },
+            { re: /ship training/i, name: 'Ship Training', proc: 'ship', limitKey: 'fclm_onb_lim_shiptrn', defLimit: 4 },
+            { re: /stow ambassador/i, name: 'Stow Ambassador', proc: 'stow', limitKey: 'fclm_onb_lim_stowamb', defLimit: 11 },
+            { re: /stow prime training|stow training/i, name: 'Stow Prime Training', proc: 'stow', limitKey: 'fclm_onb_lim_stowtrn', defLimit: 4 },
+            { re: /transfer in amb/i, name: 'Transfer In Ambssdr', proc: 'tin', limitKey: 'fclm_onb_lim_tinamb', defLimit: 11 },
+            { re: /transfer in training/i, name: 'Transfer In Training', proc: 'tin', limitKey: 'fclm_onb_lim_tintrn', defLimit: 4 },
+            { re: /ib dock ambassador/i, name: 'IB Dock Ambassador', proc: 'recv', limitKey: 'fclm_onb_lim_ibdockamb', defLimit: 11 },
+            { re: /receive ambassador/i, name: 'Receive Ambassador', proc: 'recv', limitKey: 'fclm_onb_lim_recvamb', defLimit: 11 },
+            { re: /receive training/i, name: 'Receive Training', proc: 'recv', limitKey: 'fclm_onb_lim_recvtrn', defLimit: 4 },
+            { re: /v-?returns ambassador/i, name: 'V-Returns Ambassador', proc: 'vret', limitKey: 'fclm_onb_lim_vretamb', defLimit: 11 },
+            { re: /v-?returns training/i, name: 'V-Returns Training', proc: 'vret', limitKey: 'fclm_onb_lim_vrettrn', defLimit: 4 },
+            { re: /prep ambassador/i, name: 'Prep Ambassador', proc: 'prep', limitKey: 'fclm_onb_lim_prepamb', defLimit: 11 },
+            { re: /prep training/i, name: 'Prep Training', proc: 'prep', limitKey: 'fclm_onb_lim_preptrn', defLimit: 4 },
+            { fnId: LEARN_FN, exact: true, name: 'Learning', proc: 'adm', limitKey: 'fclm_onb_lim_learning', defLimit: 1 },
+        ];
+        function cfgOf(t) { const fnId = t && t.fnId; const title = (t && t.title) || (typeof t === 'string' ? t : ''); return TRAININGS.find(c => (c.fnId && fnId && fnId === c.fnId) || (!c.exact && c.re && c.re.test(title)) || (c.exact && title && title.toLowerCase() === c.name.toLowerCase())) || null; }
+        function isAllowedTraining(t) { return !!cfgOf(t); }
         function isLearning(t) { return t.fnId === LEARN_FN; }
-        // Filtro de funções: SEMPRE só as funções que precisamos (Learning só pelo fnId 4300006689
-        // + treinamentos permitidos). Não existe mais opção de "mostrar tudo".
+        // Puxa TODAS as funções que o Learning Hours puxa (fonte única = TRAININGS).
         function passFilter(t) { return isAllowedTraining(t); }
-        // Único filtro alternável: limitar por horas (só quem passou do limite) OU
-        // mostrar todos os associados das funções que precisamos.
+        const procIdOf = key => { const p = PROCESSES.find(x => x.key === key); return p ? p.processId : ONB_PROCESS; };
+        function procOf(t) { const c = cfgOf(t); const key = c ? c.proc : 'onb'; return PROCESSES.find(p => p.key === key) || PROCESSES[0]; }
+
+        // Único filtro alternável: limitar por horas (só quem passou do limite) OU mostrar todos.
         const LIMIT_KEY = 'fclm_onb_limit_by_hours';
         let limitByHours = gmGet(LIMIT_KEY, '1') !== '0';
         function setLimitByHours(on) { limitByHours = !!on; gmSet(LIMIT_KEY, limitByHours ? '1' : '0'); }
-        function limitLabel() { return limitByHours ? '⏱️ Limitar por horas' : '� Mostrar todos'; }
+        function limitLabel() { return limitByHours ? '⏱️ Limitar por horas' : '📋 Mostrar todos'; }
         function listTitle() { return limitByHours ? 'Acima em hora' : 'Todos (horas logadas)'; }
-        // Learning aparece SEMPRE na página do functionRollup; no onboarding só no Dia 3.
-        function showLearning() {
-            if (onFclmOnbReport()) return true;
-            const c = getCycle(); return !!(c && c.selection === 'onb3');
-        }
 
-        function reportUrl(processId) {
+        // ── Filtro de janela selecionável (só na página fixa do FCLM) ──────────
+        // Fora da página do FCLM (fluxo Onboarding Dia 1/2/3), a janela é detectada
+        // automaticamente pelo turno atual (dia/noite/madrugada) — comportamento antigo.
+        const FILTER_KEY = 'fclm_onb_window_filter';
+        function pad2(n) { return String(n).padStart(2, '0'); }
+        function ymdSlash(d) { return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); }
+        function ymdDash(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+        function loadFilter() { try { const s = gmGet(FILTER_KEY, ''); if (s) return JSON.parse(s); } catch (e) {} return { mode: 'day', date: ymdDash(new Date()) }; }
+        function saveFilter(f) { gmSet(FILTER_KEY, JSON.stringify(f)); }
+        let currentFilter = loadFilter();
+        const modeLabel = m => m === 'night' ? '🌙 Noite' : (m === 'full' ? '🗓️ Dia todo' : (m === 'd6to5' ? '🕕 06→05' : '☀️ Dia'));
+        function buildWindowParams(f) {
+            const parts = String(f.date || '').split('-').map(Number);
+            const base = (parts.length === 3 && !parts.some(isNaN)) ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
+            const next = new Date(base); next.setDate(base.getDate() + 1);
+            const p = new URLSearchParams();
+            p.set('warehouseId', WAREHOUSE);
+            if (f.mode === 'full') {
+                p.set('spanType', 'Day');
+                p.set('startDate', ymdDash(base) + 'T00:00:00.000');
+                p.set('endDate', ymdDash(next) + 'T00:00:00.000');
+            } else if (f.mode === 'night') {
+                p.set('maxIntradayDays', '2'); p.set('spanType', 'Intraday');
+                p.set('startDateIntraday', ymdSlash(base)); p.set('startHourIntraday', '18'); p.set('startMinuteIntraday', '0');
+                p.set('endDateIntraday', ymdSlash(next)); p.set('endHourIntraday', '5'); p.set('endMinuteIntraday', '30');
+            } else if (f.mode === 'd6to5') {
+                const prev = new Date(base); prev.setDate(base.getDate() - 1);
+                p.set('maxIntradayDays', '2'); p.set('spanType', 'Intraday');
+                p.set('startDateIntraday', ymdSlash(prev)); p.set('startHourIntraday', '6'); p.set('startMinuteIntraday', '0');
+                p.set('endDateIntraday', ymdSlash(base)); p.set('endHourIntraday', '5'); p.set('endMinuteIntraday', '0');
+            } else {
+                p.set('maxIntradayDays', '1'); p.set('spanType', 'Intraday');
+                p.set('startDateIntraday', ymdSlash(base)); p.set('startHourIntraday', '5'); p.set('startMinuteIntraday', '30');
+                p.set('endDateIntraday', ymdSlash(base)); p.set('endHourIntraday', '18'); p.set('endMinuteIntraday', '0');
+            }
+            return p;
+        }
+        function windowPreviewText(f) {
+            const parts = String(f.date || '').split('-').map(Number);
+            const base = (parts.length === 3 && !parts.some(isNaN)) ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
+            const next = new Date(base); next.setDate(base.getDate() + 1);
+            const prev = new Date(base); prev.setDate(base.getDate() - 1);
+            const dm = d => pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1);
+            const hm = (h, m) => pad2(h) + ':' + pad2(m);
+            let sD, sH, sM, eD, eH, eM;
+            if (f.mode === 'full') { sD = base; sH = 0; sM = 0; eD = next; eH = 0; eM = 0; }
+            else if (f.mode === 'night') { sD = base; sH = 18; sM = 0; eD = next; eH = 5; eM = 30; }
+            else if (f.mode === 'd6to5') { sD = prev; sH = 6; sM = 0; eD = base; eH = 5; eM = 0; }
+            else { sD = base; sH = 5; sM = 30; eD = base; eH = 18; eM = 0; }
+            return dm(sD) + ' ' + hm(sH, sM) + ' → ' + dm(eD) + ' ' + hm(eH, eM);
+        }
+        // Janela AUTOMÁTICA pelo turno atual (fluxo Onboarding fora da página do FCLM).
+        function autoShiftParams() {
             const now = new Date();
             const mins = now.getHours() * 60 + now.getMinutes();
             const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const fmt = d => d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0');
             let startD, endD, sH, sM, eH, eM;
-            if (mins >= 330 && mins < 1080) {          // DIA: hoje 05:30 → hoje 18:00
-                startD = day0; endD = day0; sH = 5; sM = 30; eH = 18; eM = 0;
-            } else if (mins >= 1080) {                 // NOITE (começou hoje): hoje 18:00 → amanhã 05:30
-                startD = day0; endD = new Date(day0); endD.setDate(day0.getDate() + 1); sH = 18; sM = 0; eH = 5; eM = 30;
-            } else {                                   // MADRUGADA (<05:30): ontem 18:00 → hoje 05:30
-                startD = new Date(day0); startD.setDate(day0.getDate() - 1); endD = day0; sH = 18; sM = 0; eH = 5; eM = 30;
-            }
-            // maxIntradayDays cobre quantas DATAS de calendário a janela abrange:
-            // DIA = 1 (mesma data); NOITE/MADRUGADA = 2 (cruza a meia-noite).
+            if (mins >= 330 && mins < 1080) { startD = day0; endD = day0; sH = 5; sM = 30; eH = 18; eM = 0; }
+            else if (mins >= 1080) { startD = day0; endD = new Date(day0); endD.setDate(day0.getDate() + 1); sH = 18; sM = 0; eH = 5; eM = 30; }
+            else { startD = new Date(day0); startD.setDate(day0.getDate() - 1); endD = day0; sH = 18; sM = 0; eH = 5; eM = 30; }
             const dayDiff = Math.round((endD - startD) / 86400000);
             const p = new URLSearchParams();
-            p.set('reportFormat', 'HTML'); p.set('warehouseId', WAREHOUSE); p.set('processId', processId || ONB_PROCESS);
+            p.set('warehouseId', WAREHOUSE);
             p.set('maxIntradayDays', String(dayDiff + 1)); p.set('spanType', 'Intraday');
             p.set('startDateIntraday', fmt(startD)); p.set('startHourIntraday', String(sH)); p.set('startMinuteIntraday', String(sM));
             p.set('endDateIntraday', fmt(endD)); p.set('endHourIntraday', String(eH)); p.set('endMinuteIntraday', String(eM));
+            return p;
+        }
+
+        function reportUrl(processId) {
+            // Na página fixa do FCLM usa a janela selecionável; fora dela, a janela do turno.
+            const p = onFclmReport() ? buildWindowParams(currentFilter) : autoShiftParams();
+            p.set('reportFormat', 'HTML');
+            p.set('processId', processId || ONB_PROCESS);
             return FCLM_ORIGIN + '/reports/functionRollup?' + p.toString();
         }
         function fetchOne(processId, cb) {
@@ -835,17 +932,14 @@
         }
         // Busca o relatório de Onboarding e (quando aplicável) o de Learning, combinando.
         function fetchReport(cb) {
-            const targets = [ONB_PROCESS];
-            if (showLearning()) targets.push(LEARN_PROCESS);
+            // Puxa TODOS os processos que o Learning Hours puxa (não só Onboarding/Learning).
+            const targets = PROCESSES.filter(p => p.processId).map(p => p.processId);
             let done = 0, errs = 0, trainings = [];
             const finish = () => {
                 if (done < targets.length) return;
-                // Na própria página do relatório, também lê as tabelas que estão na tela
-                // (garante capturar o Learning [4300006689] mesmo que esteja sob outro processId).
-                if (onFclmOnbReport()) { try { trainings = trainings.concat(parseFunctionTables(document).filter(passFilter)); } catch (e) {} }
                 trainings = mergeTrainings(trainings);
-                if (!trainings.length) { cb(null, errs === targets.length ? 'Falha de conexão' : null); return; }
-                cb(buildReportFrom(trainings), null);
+                if (errs === targets.length) { cb(null, 'Falha de conexão'); return; }
+                cb(buildReportFrom(trainings), null);   // pode vir vazio → tratado como 0
             };
             targets.forEach(pid => fetchOne(pid, doc => {
                 if (doc) { try { trainings = trainings.concat(parseFunctionTables(doc).filter(passFilter)); } catch (e) {} }
@@ -951,23 +1045,73 @@
         // Limites de horas POR DIA de Onboarding (máx por treinamento).
         const DAY_LIMITS = {
             onb1: [{ re: /fc training/i, name: 'FC Training', limit: 9 }, { re: /safety tour/i, name: 'Safety Tour', limit: 1 }, { re: /safety school/i, name: 'Safety School', limit: 2 }],
-            onb2: [{ re: /fc training/i, name: 'FC Training', limit: 3 }, { re: /safety tour/i, name: 'Safety Tour', limit: 1 }, { re: /safety school/i, name: 'Safety School', limit: 1 }],
-            onb3: [{ re: /fc training/i, name: 'FC Training', limit: 1 }, { re: /safety tour/i, name: 'Safety Tour', limit: 1 }, { re: /safety school/i, name: 'Safety School', limit: 1 }, { re: /learning/i, name: 'Learning', limit: 1 }],
+            // Dia 2: General FC Training é tratado na aba "Logado errado" (fora de "Acima em hora").
+            onb2: [{ re: /safety tour/i, name: 'Safety Tour', limit: 1 }, { re: /safety school/i, name: 'Safety School', limit: 1 }],
+            // Dia 3: qualquer "Training" (todos os processos) = 2h no máximo. General FC Training vai em "Logado errado".
+            onb3: [{ re: /training/i, name: 'Training (todos)', limit: 2 }, { re: /safety tour/i, name: 'Safety Tour', limit: 1 }, { re: /safety school/i, name: 'Safety School', limit: 1 }, { re: /learning/i, name: 'Learning', limit: 1 }],
         };
-        // Padrão (acesso direto ao FCLM ou fluxo não-Onboarding): mantém o filtro atual + Learning > 1h.
-        const DEFAULT_SET = [{ re: /fc training/i, name: 'FC Training', limit: 9 }, { re: /safety school/i, name: 'Safety School', limit: 2 }, { re: /learning/i, name: 'Learning', limit: 1 }];
-        // Conjunto de limites ativo: usa o dia do Onboarding escolhido no checklist; senão o padrão.
-        function activeLimitSet() {
-            try { const c = getCycle(); const sel = c && c.selection; if (DAY_LIMITS[sel]) return DAY_LIMITS[sel]; } catch (e) {}
-            return DEFAULT_SET;
+        // Limite POR TREINAMENTO (configurável e persistente) — base fora do fluxo de dia.
+        function trainingLimit(c) { const v = parseFloat(String(gmGet(c.limitKey, String(c.defLimit))).replace(',', '.')); return isNaN(v) ? c.defLimit : v; }
+        function setTrainingLimit(c, v) { gmSet(c.limitKey, String(v)); }
+        // Override do limite pelo DIA de Onboarding (fluxo onb1/2/3, fora da página fixa do FCLM).
+        function dayLimitFor(title) {
+            if (onFclmReport()) return null;
+            let sel; try { const c = getCycle(); sel = c && c.selection; } catch (e) {}
+            const set = DAY_LIMITS[sel]; if (!set) return null;
+            for (const r of set) if (r.re.test(title)) return r.limit;
+            return null;
         }
-        function getLimit(title) { const set = activeLimitSet(); for (const r of set) if (r.re.test(title)) return r.limit; return DEFAULT_LIMIT; }
-        function limitsDesc() { const parts = activeLimitSet().map(r => r.name + ' > ' + r.limit + 'h'); parts.push('demais > ' + DEFAULT_LIMIT + 'h'); return parts.join(' · '); }
-        function computeExceeding(trainings) {
+        // Aceita training (objeto) ou título (string).
+        function getLimit(t) {
+            const title = (t && t.title != null) ? t.title : String(t || '');
+            const dl = dayLimitFor(title); if (dl != null) return dl;
+            const c = cfgOf((t && t.title != null) ? t : { title: title });
+            return c ? trainingLimit(c) : DEFAULT_LIMIT;
+        }
+        function limitsDesc() {
+            let sel; try { const c = getCycle(); sel = c && c.selection; } catch (e) {}
+            if (!onFclmReport() && DAY_LIMITS[sel]) { const parts = DAY_LIMITS[sel].map(r => r.name + ' > ' + r.limit + 'h'); parts.push('demais > ' + DEFAULT_LIMIT + 'h'); return parts.join(' · '); }
+            return TRAININGS.map(c => c.name + ' > ' + trainingLimit(c) + 'h').join(' · ');
+        }
+        // Limite EFETIVO do treinamento no dia atual (para exibir no popup "Ver limites").
+        // General FC Training = 0h nos Dias 2/3 (ninguém deve logar nele).
+        function effectiveLimit(c) {
+            if (c.name === 'General FC Training' && isDay2or3()) return 0;
+            return getLimit({ title: c.name, fnId: c.fnId });
+        }
+        // Treinamentos esperados na aba "Horas totais" (derivados da fonte única; zerados somem).
+        const EXPECTED_TOTALS = TRAININGS.map(c => ({ re: c.exact ? new RegExp('^' + c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') : c.re, name: c.name, process: procIdOf(c.proc) }));
+        // ── Ajuste de Badge: quem passou do limite (padrão 12h), derivado dos dados ──
+        const BADGE_KEY = 'fclm_onb_lim_badge';
+        function badgeLimit() { const v = parseFloat(String(gmGet(BADGE_KEY, '12')).replace(',', '.')); return isNaN(v) ? 12 : v; }
+        function setBadgeLimit(v) { gmSet(BADGE_KEY, String(v)); }
+        function badgeEntries(r) {
+            const byP = {};
+            r.trainings.forEach(t => { const pr = procOf(t); t.people.forEach(p => { if (p.total != null && p.total > badgeLimit()) { const k = p.id || p.name.toLowerCase(); if (!byP[k] || p.total > byP[k].total) byP[k] = { name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, procName: pr.name, total: p.total }; } }); });
+            return Object.values(byP).sort((a, b) => b.total - a.total);
+        }
+        function badgeTag(total) { return (total != null && total > badgeLimit()) ? ' <span style="background:' + C.red + ';color:#fff;font-size:11px;font-weight:800;padding:1px 7px;border-radius:10px;margin-left:4px;">🪪 ajuste de badge</span>' : ''; }
+        // Escopo por DIA de Onboarding (o que aparece no painel):
+        //   Dia 1  → só os calm codes de On Boarding (processo 'onb').
+        //   Dia 2/3 (e demais contextos) → todas as horas (todos os processos).
+        //   Página fixa do FCLM → sempre tudo (tem o filtro de janela).
+        function scopedTrainings(trainings) {
+            if (onFclmReport()) return trainings;
+            let sel; try { const c = getCycle(); sel = c && c.selection; } catch (e) {}
+            if (sel === 'onb1') return trainings.filter(t => procOf(t).key === 'onb');
+            return trainings;
+        }
+        // Fonte da lista "Acima em hora": nos Dias 2/3 tira General FC Training (vai na aba "Logado errado").
+        function exceedingSource(trainings) {
+            const scoped = scopedTrainings(trainings);
+            return isDay2or3() ? scoped.filter(t => !isGeneralFcTraining(t)) : scoped;
+        }
+        // forceLimit=true → sempre limita por horas (usado no overlay simplificado, que
+        // NUNCA mostra todos; "mostrar todos" existe só no detalhe/dashboard).
+        function computeExceeding(trainings, forceLimit) {
             const list = [];
-            // limitByHours ON  → só quem passou do limite.
-            // limitByHours OFF → todos os associados das funções que precisamos (com horas logadas).
-            trainings.forEach(t => { const lim = getLimit(t.title); t.people.forEach(p => { if (p.total != null && (!limitByHours || p.total > lim)) list.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total, limit: lim }); }); });
+            const useLimit = forceLimit || limitByHours;
+            trainings.forEach(t => { const lim = getLimit(t); t.people.forEach(p => { if (p.total != null && (!useLimit || p.total > lim)) list.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total, limit: lim }); }); });
             return list.sort((a, b) => (b.total - b.limit) - (a.total - a.limit));
         }
         function allManagers(trainings) { const s = new Set(); trainings.forEach(t => t.people.forEach(p => { if (p.manager) s.add(p.manager); })); return [...s].sort((a, b) => a.localeCompare(b)); }
@@ -980,11 +1124,65 @@
             return { trainings, titles: r.titles, allPeople, manager: mgr };
         }
         function groupByManager(items, getMgr) { const by = {}; items.forEach(it => { const m = getMgr(it) || 'Sem gestor'; (by[m] = by[m] || []).push(it); }); return by; }
-        // Títulos usados na comparação "Precisa logar em outro" — exclui Learning
-        // (Learning é opcional no Dia 3; só entra na checagem "Acima em hora" > limite).
+        // Filtra o relatório por processo (aba do "Mais detalhes").
+        function filterByProcess(r, procKey) { const trainings = r.trainings.filter(t => procOf(t).key === procKey); const fr = buildReportFrom(trainings); fr.manager = r.manager; return fr; }
+        // Dia do Onboarding escolhido no checklist.
+        function daySel() { let sel; try { const c = getCycle(); sel = c && c.selection; } catch (e) {} return sel; }
+        function isDay1() { return daySel() === 'onb1'; }
+        function isDay2() { return daySel() === 'onb2'; }
+        function isDay3() { return daySel() === 'onb3'; }
+        function isDay2or3() { const s = daySel(); return s === 'onb2' || s === 'onb3'; }
+        // General FC Training: nos Dias 2/3 ninguém deve estar logado nele (vira "Logado errado").
+        function isGeneralFcTraining(t) { const c = cfgOf(t); return !!(c && c.name === 'General FC Training'); }
+        // Títulos da comparação "Precisa logar em outro" — APENAS os calm codes do
+        // processo On Boarding (exclui Learning e demais processos).
         function compareTitles(r) {
-            const learn = new Set(r.trainings.filter(t => t.fnId === LEARN_FN || isLearning(t)).map(t => t.title));
-            return r.titles.filter(tt => !learn.has(tt));
+            const onb = filterByProcess(r, 'onb');
+            const learn = new Set(onb.trainings.filter(t => t.fnId === LEARN_FN || isLearning(t)).map(t => t.title));
+            return onb.titles.filter(tt => !learn.has(tt));
+        }
+        // "Precisa logar" (só Dia 1 e Dia 2):
+        //   Dia 1 → associados de On Boarding faltando em algum calm code de On Boarding.
+        //   Dia 2 → quem está logado em Learning mas NÃO está em nenhum calm code "* Training"
+        //           (General FC Training NÃO conta como Training válido — é "logado errado").
+        function computeFaltantes(r) {
+            if (isDay1()) {
+                // Base: quem está logado em General FC Training. Compara com os OUTROS 2 calm codes
+                // de On Boarding (FC Safety Tour e Safety School) para ver quem precisa logar.
+                const otherNames = TRAININGS.filter(c => c.proc === 'onb' && c.name !== 'General FC Training').map(c => c.name);
+                const haveNames = {};   // personKey -> Set de calm codes (FC Safety Tour / Safety School) em que está
+                r.trainings.forEach(t => { const c = cfgOf(t); if (c && c.proc === 'onb' && c.name !== 'General FC Training') t.people.forEach(p => { const k = personKey(p); (haveNames[k] = haveNames[k] || new Set()).add(c.name); }); });
+                const out = [], seen = new Set();
+                r.trainings.filter(t => isGeneralFcTraining(t)).forEach(t => t.people.forEach(p => {
+                    const k = personKey(p); if (seen.has(k)) return; seen.add(k);
+                    const have = haveNames[k] || new Set();
+                    const falta = otherNames.filter(n => !have.has(n));
+                    if (falta.length) out.push({ p: { name: p.name, id: p.id, manager: p.manager, link: p.link }, falta });
+                }));
+                return out.sort((a, b) => (a.p.manager || '').localeCompare(b.p.manager || ''));
+            }
+            if (isDay2()) {
+                const inTraining = new Set();
+                r.trainings.filter(t => /training/i.test(t.title) && !isGeneralFcTraining(t)).forEach(t => t.people.forEach(p => inTraining.add(personKey(p))));
+                const out = [], seen = new Set();
+                r.trainings.filter(t => t.fnId === LEARN_FN || isLearning(t) || /^\s*learning\s*$/i.test(t.title)).forEach(t => t.people.forEach(p => {
+                    const k = personKey(p);
+                    if (seen.has(k)) return; seen.add(k);
+                    if (!inTraining.has(k)) out.push({ p: { name: p.name, id: p.id, manager: p.manager, link: p.link }, falta: ['algum calm code de Training'] });
+                }));
+                return out.sort((a, b) => (a.p.manager || '').localeCompare(b.p.manager || ''));
+            }
+            return [];
+        }
+        // "Logado errado" (Dia 2/3): qualquer associado logado em General FC Training (a partir de 0h).
+        function logadoErrado(r) {
+            if (!isDay2or3()) return [];
+            const out = [], seen = new Set();
+            r.trainings.filter(t => isGeneralFcTraining(t)).forEach(t => t.people.forEach(p => {
+                const k = personKey(p); if (seen.has(k)) return; seen.add(k);
+                out.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total || 0 });
+            }));
+            return out.sort((a, b) => (b.total || 0) - (a.total || 0));
         }
 
         // ── Exportação CSV (formato largo: 1 linha por associado) ────────
@@ -992,7 +1190,7 @@
         function buildCsv(r) {
             const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
             const titles = r.titles;
-            const cmpTitles = compareTitles(r);
+            const faltaMap = {}; computeFaltantes(r).forEach(({ p, falta }) => { faltaMap[personKey(p)] = falta; });
             const header = ['Nome', 'ID', 'Manager'].concat(titles).concat(['Faltando em', 'Acima do limite']);
             const lines = [header.map(q).join(',')];
             r.allPeople.forEach(p => {
@@ -1002,7 +1200,7 @@
                     const pp = t.people.find(x => personKey(x) === key);
                     if (pp) { hoursByTitle[t.title] = pp.total; if (pp.total != null && pp.total > getLimit(t.title)) acima.push(t.title + ' (' + pp.total.toFixed(2) + 'h)'); }
                 });
-                const falta = cmpTitles.filter(tt => !p.inset.has(tt));
+                const falta = faltaMap[key] || [];
                 const row = [p.name, p.id, p.manager]
                     .concat(titles.map(tt => hoursByTitle[tt] != null ? hoursByTitle[tt].toFixed(2) : ''))
                     .concat([falta.join('; '), acima.join('; ')]);
@@ -1023,59 +1221,116 @@
             downloadCsv(buildCsv(r), 'onboarding_treinamentos' + mgr + '_' + dLbl + '.csv');
         }
 
-        // ── Envio para o Slack (só no overlay fixo do FCLM/function) ─────
+        // ── Envio para o Slack (SÓ no overlay fixo do FCLM/functionRollup) ─────
         const SLACK_KEY = 'fclm_onb_slack_webhook';
         function slackName(name, link) { return link ? '<' + link + '|' + name + '>' : '*' + name + '*'; }
+        // Emoji de relógio conforme a hora APROXIMADA (mais perto do horário de envio):
+        // 09h/21h = :clock9: · 13h/01h = :clock1: · 17h = :clock5: · 04h = :clock4:.
+        function slackClockEmoji() {
+            const targets = [[9 * 60, ':clock9:'], [13 * 60, ':clock1:'], [17 * 60, ':clock5:'], [21 * 60, ':clock9:'], [1 * 60, ':clock1:'], [4 * 60, ':clock4:']];
+            const now = new Date(); const cur = now.getHours() * 60 + now.getMinutes();
+            let bestE = targets[0][1], bestD = Infinity;
+            targets.forEach(([m, e]) => { let d = Math.abs(cur - m); d = Math.min(d, 1440 - d); if (d < bestD) { bestD = d; bestE = e; } });
+            return bestE;
+        }
+        // Categorias "amigáveis" p/ dividir as horas no Slack:
+        //   General FC Training → Horas de onboarding · FC Safety Tour → Tour
+        //   qualquer *Ambassador → Embaixadores · qualquer *Training (fora os acima) → Em treinamento.
+        function slackCat(title) {
+            if (/general fc training/i.test(title)) return 'Horas de onboarding';
+            if (/fc safety tour/i.test(title)) return 'Tour';
+            if (/ambassador/i.test(title)) return 'Embaixadores';
+            if (/training/i.test(title)) return 'Em treinamento';
+            return title;   // demais (Safety School, Learning, etc.) mantêm o nome
+        }
+        // Obs. resumida: uma linha por categoria com o limite (hora) na frente.
+        function slackObs() {
+            const lim = name => { const c = TRAININGS.find(x => x.name === name); return c ? effectiveLimit(c) : '?'; };
+            const trnCfg = TRAININGS.find(c => c.proc !== 'onb' && /training/i.test(c.name));   // ex.: ICQA Training
+            const ambCfg = TRAININGS.find(c => /ambassador/i.test(c.name));
+            const parts = [];
+            parts.push('Horas de onboarding (General FC Training) = ' + lim('General FC Training') + 'h');
+            parts.push('Tour (FC Safety Tour) = ' + lim('FC Safety Tour') + 'h');
+            if (trnCfg) parts.push('Em treinamento (todos com Training) = ' + effectiveLimit(trnCfg) + 'h');
+            if (ambCfg) parts.push('Embaixadores (todos com Ambassador) = ' + effectiveLimit(ambCfg) + 'h');
+            return parts.join(' · ');
+        }
         function buildSlackText(r) {
-            const exceeding = computeExceeding(r.trainings);
-            const cmpTitles = compareTitles(r);
-            const faltantes = r.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
             const now = new Date();
-            const dLbl = String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear();
-            const title = onFclmOnbReport() ? 'Learning Hours' : 'Onboarding — Horas';
-            let msg = ':bar_chart: *' + title + '* — ' + dLbl + '\n_' + limitsDesc() + '_\n\n';
-            msg += (limitByHours ? ':alarm_clock:' : ':clipboard:') + ' *' + listTitle() + ' (' + exceeding.length + ')*\n';
+            const dLbl = pad2(now.getDate()) + '/' + pad2(now.getMonth() + 1) + '/' + now.getFullYear();
+            const hhmm = pad2(now.getHours()) + ':' + pad2(now.getMinutes());
+            const exceeding = computeExceeding(r.trainings);
+            const faltantes = computeFaltantes(r);
+            const errados = logadoErrado(r);
+            const badges = badgeEntries(r);
+            let msg = slackClockEmoji() + ' *Learning Hours* — ' + dLbl + ' ' + hhmm + '\n';
+            // Cada seção só aparece quando TEM dados.
+            // ⏰ Acima da hora limite (dividido por categoria)
             if (exceeding.length) {
-                const by = groupByManager(exceeding, e => e.manager);
-                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => {
-                    msg += '> *' + mgr + '*\n';
-                    by[mgr].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — ' + e.title + ': *' + e.total.toFixed(2) + 'h*\n'; });
+                msg += '\n⏰ *Acima da hora limite (' + exceeding.length + ')*\n';
+                const CAT_ORDER = ['Horas de onboarding', 'Tour', 'Em treinamento', 'Embaixadores'];
+                const by = groupByManager(exceeding, e => slackCat(e.title));
+                const cats = Object.keys(by).sort((a, b) => { const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b); });
+                cats.forEach(cat => {
+                    msg += '> *' + cat + '*\n';
+                    by[cat].sort((a, b) => (b.total || 0) - (a.total || 0)).forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; });
                 });
-            } else { msg += '> ' + (limitByHours ? 'Ninguém acima do limite' : 'Nenhum associado nas funções que precisamos') + ' :white_check_mark:\n'; }
-            msg += '\n:repeat: *Precisa logar em outro (' + faltantes.length + ')*\n';
+            }
+            // 🔁 Faltar Logar
             if (faltantes.length) {
+                msg += '\n🔁 *Faltar Logar (' + faltantes.length + ')*\n';
                 const by = groupByManager(faltantes, x => x.p.manager);
-                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => {
-                    msg += '> *' + mgr + '*\n';
-                    by[mgr].forEach(({ p, falta }) => { msg += '>  • ' + slackName(p.name, p.link) + ' — colocar em: ' + falta.join(', ') + '\n'; });
-                });
-            } else { msg += '> Todos presentes em todos :white_check_mark:\n'; }
+                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { msg += '> *' + mgr + '*\n'; by[mgr].forEach(({ p, falta }) => { msg += '>  • ' + slackName(p.name, p.link) + ' — colocar em: ' + falta.join(', ') + '\n'; }); });
+            }
+            // 🚫 Logado errado (General FC Training)
+            if (errados.length) {
+                msg += '\n🚫 *Logado errado (' + errados.length + ')*\n';
+                const by = groupByManager(errados, e => e.manager);
+                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { msg += '> *' + mgr + '*\n'; by[mgr].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + (e.total || 0).toFixed(2) + 'h*\n'; }); });
+            }
+            // 🪪 Ajuste de Badge
+            if (badges.length) {
+                msg += '\n🪪 *Ajuste de Badge (' + badges.length + ')*\n';
+                const by = groupByManager(badges, e => e.manager);
+                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { msg += '> *' + mgr + '*\n'; by[mgr].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + (e.total || 0).toFixed(2) + 'h* (' + e.title + ')\n'; }); });
+            }
+            msg += '\n_Obs.: ' + slackObs() + '_';
             return msg;
         }
-        function sendSlack(r, btn) {
-            let wh = gmGet(SLACK_KEY, '');
-            if (!wh) {
-                wh = prompt('🔗 Integração Slack:\nCole a URL do Incoming Webhook do seu canal:');
-                if (!wh) return;
+        // Modal para colar/salvar o Webhook e enviar o resumo ao Slack.
+        function openSlackModal(r) {
+            const { modal, box } = makeModal('onb-webhook', '480px');
+            modalHeader(box, '📤 Enviar para o Slack', 'cole/edite o Incoming Webhook e envie o resumo');
+            const body = document.createElement('div'); body.style.cssText = 'flex:1;overflow-y:auto;padding:18px 20px;background:' + C.bodyBg + ';';
+            body.innerHTML = '<label style="display:block;font-size:12px;font-weight:700;color:' + C.dark + ';margin-bottom:6px;">🔗 Webhook do Slack (https://hooks.slack.com/...)</label>';
+            const inp = document.createElement('input'); inp.type = 'text'; inp.value = gmGet(SLACK_KEY, ''); inp.placeholder = 'https://hooks.slack.com/services/...';
+            inp.style.cssText = 'width:100%;padding:10px 12px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;box-sizing:border-box;';
+            body.appendChild(inp);
+            const hint = document.createElement('div'); hint.style.cssText = 'font-size:11px;color:' + C.grey + ';margin-top:8px;'; hint.textContent = 'O webhook fica salvo neste navegador para os próximos envios.';
+            body.appendChild(hint); box.appendChild(body);
+            const foot = document.createElement('div'); foot.style.cssText = 'background:#fff;border-top:1px solid ' + C.border + ';padding:12px 18px;display:flex;justify-content:space-between;gap:8px;flex-shrink:0;';
+            const okWh = wh => /^https:\/\/hooks\.slack\.com\//i.test(wh);
+            const bSave = document.createElement('button'); bSave.innerHTML = '💾 Salvar webhook'; bSave.style.cssText = 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;padding:9px 16px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;';
+            bSave.onclick = () => { const wh = (inp.value || '').trim(); if (!okWh(wh)) { alert('❌ Informe uma URL válida (https://hooks.slack.com/...).'); return; } gmSet(SLACK_KEY, wh); alert('✅ Webhook salvo.'); };
+            const bSend = document.createElement('button'); bSend.innerHTML = '📤 Enviar'; bSend.style.cssText = 'background:linear-gradient(145deg,#4A154B,#611f69);color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;box-shadow:0 3px 10px rgba(74,21,75,0.35);';
+            bSend.onclick = () => {
+                const wh = (inp.value || '').trim();
+                if (!okWh(wh)) { alert('❌ Informe uma URL válida (https://hooks.slack.com/...).'); return; }
                 gmSet(SLACK_KEY, wh);
-            }
-            const orig = btn ? btn.innerHTML : '';
-            if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Enviando...'; }
-            const restore = () => { if (btn) { btn.disabled = false; btn.innerHTML = orig; } };
-            try {
-                GM_xmlhttpRequest({
-                    method: 'POST', url: wh,
-                    data: JSON.stringify({ text: buildSlackText(r) }),
-                    headers: { 'Content-Type': 'application/json' },
-                    onload: res => {
-                        restore();
-                        if (res.status >= 200 && res.status < 300) { alert('✅ Enviado para o Slack!'); }
-                        else if (confirm('❌ Erro ' + res.status + '. Deseja resetar o webhook?')) { gmSet(SLACK_KEY, ''); }
-                    },
-                    onerror: () => { restore(); alert('❌ Falha de conexão ao enviar para o Slack.'); },
-                });
-            } catch (e) { restore(); alert('❌ Não foi possível enviar para o Slack.'); }
+                bSend.disabled = true; bSend.innerHTML = '⏳ Enviando...';
+                const reset = () => { bSend.disabled = false; bSend.innerHTML = '📤 Enviar'; };
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'POST', url: wh, data: JSON.stringify({ text: buildSlackText(r) }), headers: { 'Content-Type': 'application/json' },
+                        onload: res => { if (res.status >= 200 && res.status < 300) { modal.remove(); alert('✅ Enviado para o Slack!'); } else { reset(); alert('❌ Erro ' + res.status + ' ao enviar. Verifique o webhook.'); } },
+                        onerror: () => { reset(); alert('❌ Falha de conexão ao enviar para o Slack.'); },
+                    });
+                } catch (e) { reset(); alert('❌ Não foi possível enviar para o Slack.'); }
+            };
+            inp.addEventListener('keydown', e => { if (e.key === 'Enter') bSend.click(); });
+            foot.appendChild(bSave); foot.appendChild(bSend); box.appendChild(foot); document.body.appendChild(modal);
         }
+
         function makeModal(id, maxW) {
             document.getElementById(id) && document.getElementById(id).remove();
             const modal = document.createElement('div'); modal.id = id;
@@ -1112,53 +1367,106 @@
         }
         function buildDashHTML(fr) {
             const exceeding = computeExceeding(fr.trainings);
-            const cmpTitles = compareTitles(fr);
-            const faltantes = fr.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
-            let html = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px;"><div style="background:linear-gradient(135deg,#37475A,#1a2530);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Associados</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + fr.allPeople.length + '</div></div><div style="background:linear-gradient(135deg,#E74C3C,#991010);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">' + esc(listTitle()) + '</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + exceeding.length + '</div></div><div style="background:linear-gradient(135deg,#E88B00,#a35f00);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Precisa logar</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + faltantes.length + '</div></div></div>';
+            let html = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:20px;"><div style="background:linear-gradient(135deg,#37475A,#1a2530);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Associados</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + fr.allPeople.length + '</div></div><div style="background:linear-gradient(135deg,#E74C3C,#991010);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">' + esc(listTitle()) + '</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + exceeding.length + '</div></div></div>';
             html += '<div style="font-size:13px;font-weight:700;color:' + C.grey + ';text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;">🎓 Treinamentos (clique para ver quem está)</div>';
             html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:22px;">';
             fr.trainings.forEach((t, i) => { html += '<div class="onb-train-card" data-idx="' + i + '" style="background:#fff;border:1px solid ' + C.border + ';border-left:4px solid ' + C.accent + ';border-radius:10px;padding:14px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(35,47,62,0.06);transition:all .15s ease;"><div style="font-size:15px;font-weight:700;color:' + C.dark + ';">' + esc(t.title) + '</div><div style="font-size:26px;font-weight:800;color:' + C.blue + ';margin-top:4px;">' + t.people.length + ' <span style="font-size:13px;color:' + C.grey + ';font-weight:600;">associado(s)</span></div></div>'; });
             html += '</div>';
-            html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;margin-bottom:18px;"><div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">' + (limitByHours ? '⏰' : '📋') + ' ' + esc(listTitle()) + ' (' + exceeding.length + ')' + (limitByHours ? ' <span style="font-weight:600;color:' + C.grey + ';font-size:12px;">— ' + esc(limitsDesc()) + '</span>' : '') + '</div>';
-            if (exceeding.length) { const by = groupByManager(exceeding, e => e.manager); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">👤 ' + esc(mgr) + '</div>'; by[mgr].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — ' + esc(e.title) + ': <span style="color:' + C.red + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span></div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
+            html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;margin-bottom:18px;"><div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">' + (limitByHours ? '⏰' : '📋') + ' ' + esc(listTitle()) + ' (' + exceeding.length + ')' + (limitByHours ? ' <span style="font-weight:600;color:' + C.grey + ';font-size:12px;">— ' + esc(fr.trainings.map(t => t.title + ' > ' + getLimit(t) + 'h').join(' · ')) + '</span>' : '') + '</div>';
+            if (exceeding.length) { const hClr = limitByHours ? C.red : C.blue; const by = groupByManager(exceeding, e => e.title || 'Sem função'); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>'; by[fn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.manager) + ')</span>' : '') + badgeTag(e.total) + '</div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
             html += '</div>';
-            html += '<div style="background:rgba(232,139,0,0.08);border:1px solid ' + C.amber + ';border-radius:12px;padding:14px 16px;"><div style="font-size:15px;font-weight:800;color:' + C.amber + ';margin-bottom:8px;">🔁 Precisa logar em outro (' + faltantes.length + ')</div>';
-            if (faltantes.length) { const byF = groupByManager(faltantes, x => x.p.manager); Object.keys(byF).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.amber + ';">👤 ' + esc(mgr) + '</div>'; byF[mgr].forEach(({ p, falta }) => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(p.name, p.link) + ' — colocar em: <span style="color:' + C.red + ';font-weight:600;">' + esc(falta.join(', ')) + '</span></div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Todos presentes em todos os treinamentos ✅</div>'; }
+            return html;
+        }
+        function buildBadgeHTML(fr) {
+            const list = badgeEntries(fr);
+            let html = '<div style="margin-bottom:20px;"><div style="background:linear-gradient(135deg,#E74C3C,#991010);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">🪪 Ajuste de Badge (acima de ' + badgeLimit() + 'h)</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + list.length + '</div></div></div>';
+            html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;">';
+            html += '<div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">🪪 Passaram de ' + badgeLimit() + 'h (' + list.length + ')</div>';
+            if (list.length) {
+                const by = groupByManager(list, e => e.procName || 'Sem processo');
+                const order = PROCESSES.map(p => p.name);
+                Object.keys(by).sort((a, b) => order.indexOf(a) - order.indexOf(b)).forEach(pn => {
+                    html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(pn) + '</div>';
+                    by[pn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.title) + (e.manager ? ' · ' + esc(e.manager) : '') + ')</span></div>'; });
+                });
+            } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Ninguém acima de ' + badgeLimit() + 'h ✅</div>'; }
+            html += '</div>';
+            return html;
+        }
+        function buildLogadoErradoHTML(fr) {
+            const list = logadoErrado(fr);
+            let html = '<div style="margin-bottom:20px;"><div style="background:linear-gradient(135deg,#E74C3C,#991010);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">🚫 Logado errado (General FC Training)</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + list.length + '</div></div></div>';
+            html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;">';
+            html += '<div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">🚫 Não deveriam estar logados em General FC Training nos Dias 2/3 (' + list.length + ')</div>';
+            if (list.length) {
+                const by = groupByManager(list, e => e.manager || 'Sem gestor');
+                Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => {
+                    html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">👤 ' + esc(mgr) + '</div>';
+                    by[mgr].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + (e.total || 0).toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.title) + ')</span></div>'; });
+                });
+            } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Ninguém logado em General FC Training ✅ (só vale nos Dias 2 e 3)</div>'; }
             html += '</div>';
             return html;
         }
         function showDashboard(r) {
+            r = buildReportFrom(scopedTrainings(r.trainings));   // Dia 1 = só On Boarding; Dia 2/3 = tudo
             const { modal, box } = makeModal('onb-dash', '1040px');
-            const head = modalHeader(box, '📊 Onboarding — Associados por Treinamento', r.allPeople.length + ' associado(s) · ' + r.trainings.length + ' treinamento(s)');
-            let currentR = r;
-            // Filtro de horas no header (à esquerda do ✖).
-            const btnFlt = document.createElement('button'); btnFlt.innerHTML = limitLabel(); btnFlt.title = 'Alterna entre limitar por horas (só quem passou do limite) e mostrar todos os associados das funções que precisamos';
-            btnFlt.style.cssText = 'background:' + (limitByHours ? C.green : C.grey) + ';color:#fff;border:none;padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;margin-right:8px;';
+            modalHeader(box, '📊 Learning Hours — Associados por Função', r.allPeople.length + ' associado(s) · ' + r.trainings.length + ' função(ões)');
+            let currentR = r;                        // relatório filtrado por gestor (base das abas)
+            let currentProc = PROCESSES[0].key;      // aba de processo ativa
+            let viewR = r;                           // visão exibida (gestor + processo)
+            const btnFlt = document.createElement('button'); btnFlt.innerHTML = limitLabel(); btnFlt.title = 'Alterna entre limitar por horas (só quem passou do limite) e mostrar todos';
+            btnFlt.style.cssText = 'background:' + (limitByHours ? C.green : C.grey) + ';color:#fff;border:none;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;';
             btnFlt.onclick = () => { setLimitByHours(!limitByHours); btnFlt.innerHTML = limitLabel(); btnFlt.style.background = limitByHours ? C.green : C.grey; renderD(); };
-            head.insertBefore(btnFlt, head.lastElementChild);
             const body = document.createElement('div'); body.style.cssText = 'flex:1;overflow-y:auto;padding:22px;background:' + C.bodyBg + ';';
-            const filterBar = document.createElement('div'); filterBar.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:16px;';
+            const filterBar = document.createElement('div'); filterBar.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;';
             const lbl = document.createElement('span'); lbl.textContent = '👤 Filtrar por gestor:'; lbl.style.cssText = 'font-size:12px;font-weight:700;color:' + C.dark + ';';
             const sel = document.createElement('select'); sel.style.cssText = 'padding:8px 12px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;color:' + C.dark + ';background:#fff;cursor:pointer;min-width:220px;';
             sel.innerHTML = '<option value="__all__">Todos os gestores</option>' + allManagers(r.trainings).map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join('');
-            filterBar.appendChild(lbl); filterBar.appendChild(sel);
-            const content = document.createElement('div'); body.appendChild(filterBar); body.appendChild(content); box.appendChild(body);
-            function renderD() { content.innerHTML = buildDashHTML(currentR); }
+            filterBar.appendChild(lbl); filterBar.appendChild(sel); filterBar.appendChild(btnFlt);
+            const procObj = k => PROCESSES.find(p => p.key === k) || PROCESSES[0];
+            const procTabs = document.createElement('div'); procTabs.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
+            const procBtns = PROCESSES.map(pr => { const b = document.createElement('button'); b.dataset.proc = pr.key; b.onclick = () => { currentProc = pr.key; renderD(); }; procTabs.appendChild(b); return b; });
+            function procHasData(key) { return key === 'badge' ? badgeEntries(currentR).length > 0 : key === 'errado' ? logadoErrado(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
+            function styleProcBtns() { procBtns.forEach(b => { const pr = procObj(b.dataset.proc); const on = b.dataset.proc === currentProc; const hasData = procHasData(b.dataset.proc); b.innerHTML = esc(pr.name); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + C.dark + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')); }); }
+            const btnLimits = document.createElement('button'); btnLimits.innerHTML = '⏱️ Ver limites de horas';
+            btnLimits.title = 'Apenas visualização dos limites de horas (não é possível alterar)';
+            btnLimits.style.cssText = 'background:' + C.blue + ';color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:700;font-size:13px;';
+            btnLimits.onclick = () => openLimitsPopup();
+            // Somente leitura: mostra os limites de horas em uso, sem permitir edição.
+            function openLimitsPopup() {
+                const pr = procObj(currentProc);
+                const { modal: lmodal, box: pbox } = makeModal('onb-limits', '460px');
+                modalHeader(pbox, '⏱️ Limites — ' + esc(pr.name), 'somente leitura · acima disso o associado é sinalizado em "Acima em hora"');
+                const pbody = document.createElement('div'); pbody.style.cssText = 'flex:1;overflow-y:auto;padding:16px 18px;background:' + C.bodyBg + ';';
+                const row = (label, val) => '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid ' + C.border + ';border-radius:8px;padding:9px 11px;"><span style="flex:1;font-size:13px;font-weight:700;color:' + C.dark + ';">' + label + '</span><span style="font-size:14px;font-weight:800;color:' + C.blue + ';">' + val + 'h</span></div>';
+                let h = '<div style="display:flex;flex-direction:column;gap:10px;">';
+                if (currentProc === 'badge') { h += row('🪪 Ajuste de Badge', badgeLimit()); }
+                else { const list = TRAININGS.filter(c => c.proc === currentProc); h += list.length ? list.map(c => row('🎓 ' + esc(c.name), effectiveLimit(c))).join('') : '<div style="font-size:13px;color:' + C.grey + ';">Sem treinamentos neste processo.</div>'; }
+                h += '</div>'; pbody.innerHTML = h; pbox.appendChild(pbody);
+                document.body.appendChild(lmodal);
+            }
+            filterBar.appendChild(btnLimits);
+            const content = document.createElement('div'); body.appendChild(filterBar); body.appendChild(procTabs); body.appendChild(content); box.appendChild(body);
+            function renderD() {
+                currentR = filterByManager(r, sel.value); styleProcBtns();
+                if (currentProc === 'badge') { viewR = currentR; content.innerHTML = buildBadgeHTML(currentR); }
+                else if (currentProc === 'errado') { viewR = currentR; content.innerHTML = buildLogadoErradoHTML(currentR); }
+                else { viewR = filterByProcess(currentR, currentProc); content.innerHTML = buildDashHTML(viewR); }
+            }
             renderD();
-            sel.onchange = () => { currentR = filterByManager(r, sel.value); renderD(); };
-            content.addEventListener('click', ev => { const card = ev.target.closest('.onb-train-card'); if (!card) return; showPeopleModal(currentR.trainings[+card.dataset.idx]); });
+            sel.onchange = renderD;
+            content.addEventListener('click', ev => { const card = ev.target.closest('.onb-train-card'); if (!card) return; showPeopleModal(viewR.trainings[+card.dataset.idx]); });
             content.addEventListener('mouseover', ev => { const card = ev.target.closest('.onb-train-card'); if (card) { card.style.transform = 'translateY(-2px)'; card.style.boxShadow = '0 6px 16px rgba(35,47,62,0.15)'; } });
             content.addEventListener('mouseout', ev => { const card = ev.target.closest('.onb-train-card'); if (card) { card.style.transform = 'none'; card.style.boxShadow = '0 2px 8px rgba(35,47,62,0.06)'; } });
             const foot = document.createElement('div'); foot.style.cssText = 'background:#fff;border-top:1px solid ' + C.border + ';padding:14px 20px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-shrink:0;';
             const lblF = document.createElement('span'); lblF.textContent = 'Exporta a visão atual (respeita o filtro de gestor)'; lblF.style.cssText = 'font-size:12px;color:' + C.grey + ';';
             const right = document.createElement('div'); right.style.cssText = 'display:flex;gap:8px;align-items:center;';
             const btnFclm = document.createElement('button'); btnFclm.innerHTML = '🔗 Abrir no FCLM'; btnFclm.style.cssText = 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;padding:9px 18px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;'; btnFclm.onclick = () => { try { window.open(REPORT_LINK, '_blank', 'noopener'); } catch (e) { location.href = REPORT_LINK; } };
-            const btnCsv = document.createElement('button'); btnCsv.innerHTML = '📥 Extrair CSV'; btnCsv.style.cssText = 'background:linear-gradient(145deg,#1e8449,#14562f);color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;box-shadow:0 3px 10px rgba(30,132,73,0.35);'; btnCsv.onclick = () => exportCsv(currentR);
+            const btnCsv = document.createElement('button'); btnCsv.innerHTML = '📥 Extrair CSV'; btnCsv.style.cssText = 'background:linear-gradient(145deg,#1e8449,#14562f);color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;box-shadow:0 3px 10px rgba(30,132,73,0.35);'; btnCsv.onclick = () => exportCsv(viewR);
             right.appendChild(btnFclm);
-            if (onFclmOnbReport()) {
-                const btnSlack = document.createElement('button'); btnSlack.innerHTML = '📤 Enviar para o Slack'; btnSlack.style.cssText = 'background:linear-gradient(145deg,#4A154B,#611f69);color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;box-shadow:0 3px 10px rgba(74,21,75,0.35);'; btnSlack.onclick = () => sendSlack(currentR, btnSlack);
-                right.appendChild(btnSlack);
-            }
+            // Envio ao Slack só no overlay fixo do FCLM (página functionRollup).
+            if (onFclmReport()) { const btnSlack = document.createElement('button'); btnSlack.innerHTML = '📤 Enviar para o Slack'; btnSlack.style.cssText = 'background:linear-gradient(145deg,#4A154B,#611f69);color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;box-shadow:0 3px 10px rgba(74,21,75,0.35);'; btnSlack.onclick = () => openSlackModal(currentR); right.appendChild(btnSlack); }
             right.appendChild(btnCsv);
             foot.appendChild(lblF); foot.appendChild(right); box.appendChild(foot); document.body.appendChild(modal);
         }
@@ -1184,8 +1492,7 @@
                 fetchReport((r, err) => {
                     bar.disabled = false; bar.innerHTML = bar._label;
                     if (err) { alert('❌ ' + err + '\nNão consegui buscar o relatório de onboarding.'); return; }
-                    if (!r || !r.trainings.length) { alert('❌ Nenhuma tabela de treinamento encontrada no relatório.'); return; }
-                    injectOverlay(r);
+                    injectOverlay(r || buildReportFrom([]));   // abre mesmo vazio (mostra 0)
                 });
             };
             document.body.appendChild(bar);
@@ -1196,13 +1503,13 @@
         function injectOverlay(r) {
             document.getElementById('onb-overlay') && document.getElementById('onb-overlay').remove();
             let curR = r;
-            let exceeding = [], faltantes = [], lastSig = '', refreshing = false, activeTab = 'hora';
+            let exceeding = [], faltantes = [], logErrado = [], lastSig = '', refreshing = false, activeTab = 'hora';
             function recompute() {
-                exceeding = computeExceeding(curR.trainings);
-                const cmpTitles = compareTitles(curR);
-                faltantes = curR.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
+                exceeding = computeExceeding(exceedingSource(curR.trainings), true);   // overlay: sempre limitado por horas
+                faltantes = computeFaltantes(curR);
+                logErrado = logadoErrado(curR);
             }
-            function sig() { return 'H|' + exceeding.map(e => (e.id || e.name) + ':' + e.total).join(',') + '||L|' + faltantes.map(x => (x.p.id || x.p.name) + ':' + x.falta.join('/')).join(','); }
+            function sig() { return 'H|' + exceeding.map(e => (e.id || e.name) + ':' + e.total).join(',') + '||L|' + faltantes.map(x => (x.p.id || x.p.name) + ':' + x.falta.join('/')).join(',') + '||E|' + logErrado.map(e => (e.id || e.name) + ':' + e.total).join(','); }
             function fmtTime(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0'); }
             function fmtCountdown(s) { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); return m > 0 ? (m + 'm' + String(s % 60).padStart(2, '0') + 's') : (s + 's'); }
             const REFRESH_LABEL = Math.round(OVERLAY_REFRESH_MS / 60000) + ' min';
@@ -1213,31 +1520,33 @@
             const head = document.createElement('div'); head.style.cssText = 'background:' + C.headerGrad + ';color:#fff;padding:11px 14px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
             const dia = (() => { const h = new Date().getHours(); return h >= 6 && h < 18; })();
             const headLeft = document.createElement('div');
-            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span></div>';
+            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (onFclmReport() ? (modeLabel(currentFilter.mode) + ' Learning Hours') : ((dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>')) + '</div>';
             const updatedEl = document.createElement('div'); updatedEl.style.cssText = 'font-size:10px;font-weight:600;color:' + C.gold + ';margin-top:2px;'; updatedEl.textContent = 'atualizado ' + fmtTime(new Date());
             const nextEl = document.createElement('div'); nextEl.style.cssText = 'font-size:10px;font-weight:600;color:#9fb3c8;margin-top:1px;';
             headLeft.appendChild(updatedEl); headLeft.appendChild(nextEl); head.appendChild(headLeft);
             const headBtns = document.createElement('div'); headBtns.style.cssText = 'display:flex;gap:6px;align-items:center;';
-            const btnFlt = document.createElement('button'); btnFlt.innerHTML = limitLabel(); btnFlt.title = 'Alterna entre limitar por horas (só quem passou do limite) e mostrar todos os associados das funções que precisamos';
-            btnFlt.style.cssText = 'background:' + (limitByHours ? C.green : C.grey) + ';color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:12px;';
-            btnFlt.onclick = () => { setLimitByHours(!limitByHours); ov.remove(); injectOverlay(curR); };
+            // Overlay simplificado é SEMPRE limitado por horas — sem botão "Mostrar todos"
+            // (essa opção existe só no detalhe/dashboard).
             const btnRefresh = document.createElement('button'); btnRefresh.innerHTML = '🔄'; btnRefresh.title = 'Atualizar agora';
             btnRefresh.style.cssText = 'background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:13px;';
             btnRefresh.onclick = () => doRefresh(true);
             const btnDet = document.createElement('button'); btnDet.innerHTML = '🔎 Mais detalhes'; btnDet.style.cssText = 'background:' + C.accent + ';color:#232F3E;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:12px;'; btnDet.onclick = () => { ov.remove(); showDashboard(curR); };
             const x = document.createElement('button'); x.textContent = '✖'; x.style.cssText = 'background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;'; x.onclick = () => ov.remove();
-            headBtns.appendChild(btnFlt); headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
+            headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
             const tabs = document.createElement('div'); tabs.style.cssText = 'display:flex;flex-shrink:0;border-bottom:1px solid ' + C.border + ';background:#fff;';
-            const tabHora = document.createElement('button'); const tabLog = document.createElement('button');
+            const tabHora = document.createElement('button'); const tabLog = document.createElement('button'); const tabErrado = document.createElement('button');
             const tabBase = 'flex:1;border:none;padding:10px 8px;cursor:pointer;font-weight:700;font-size:13px;font-family:\'Amazon Ember\',Arial,sans-serif;background:#fff;';
-            function updateTabLabels() { tabHora.innerHTML = (limitByHours ? '⏰ ' : '📋 ') + listTitle() + ' (' + exceeding.length + ')'; tabLog.innerHTML = '🔁 Precisa logar (' + faltantes.length + ')'; }
+            function updateTabLabels() { tabHora.innerHTML = '⏰ Acima em hora (' + exceeding.length + ')'; tabLog.innerHTML = '🔁 Precisa logar (' + faltantes.length + ')'; tabErrado.innerHTML = '🚫 Logado errado (' + logErrado.length + ')'; }
             updateTabLabels();
             const body = document.createElement('div'); body.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:12px 14px;background:' + C.bodyBg + ';';
             const mgrHeader = (mgr) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';">👤 ' + esc(mgr) + '</div>';
-            function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; return; } const by = groupByManager(exceeding, e => e.manager); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.title) + ')</span></div>'; }); }); body.innerHTML = html; }
+            const fnHeader = (fn) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>';
+            // Agrupado pelo CALM CODE (função) logado — não mais por gestor.
+            function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém acima do limite ✅</div>'; return; } const by = groupByManager(exceeding, e => e.title || 'Sem função'); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += fnHeader(fn); by[fn].forEach(e => { const over = e.total > e.limit; html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + (over ? C.red : C.navy) + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.manager) + ')</span>' : '') + '</div>'; }); }); body.innerHTML = html; }
             function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const by = groupByManager(faltantes, x => x.p.manager); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(({ p, falta }) => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + ' — colocar em: <span style="color:' + C.red + ';">' + esc(falta.join(', ')) + '</span></div>'; }); }); body.innerHTML = html; }
-            function renderTab() { if (activeTab === 'hora') renderHora(); else renderLog(); }
-            function setActive(which) { activeTab = which; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
+            function renderErrado() { if (!logErrado.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém logado em General FC Training ✅</div>'; return; } const by = groupByManager(logErrado, e => e.manager); let html = '<div style="font-size:12px;color:' + C.grey + ';margin-bottom:6px;">Não deveriam estar logados em General FC Training nos Dias 2/3:</div>'; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + (e.total || 0).toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.title) + ')</span></div>'; }); }); body.innerHTML = html; }
+            function renderTab() { if (activeTab === 'hora') renderHora(); else if (activeTab === 'errado') renderErrado(); else renderLog(); }
+            function setActive(which) { activeTab = which; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabErrado.style.cssText = tabBase + (which === 'errado' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
             // Re-busca o relatório e atualiza os números sem fechar o painel.
             function doRefresh(manual) {
                 if (refreshing || !document.body.contains(ov)) return;
@@ -1249,7 +1558,7 @@
                     refreshing = false;
                     if (btnRefresh) { btnRefresh.disabled = false; btnRefresh.style.opacity = '1'; }
                     if (!document.body.contains(ov)) return;
-                    if (err || !r2 || !r2.trainings.length) { updatedEl.textContent = '⚠️ falha ao atualizar ' + fmtTime(new Date()); return; }
+                    if (err || !r2) { updatedEl.textContent = '⚠️ falha ao atualizar ' + fmtTime(new Date()); return; }
                     curR = r2; recompute(); updateTabLabels();
                     const s = sig();
                     if (s !== lastSig) { lastSig = s; const st = body.scrollTop; renderTab(); body.scrollTop = st; }
@@ -1257,9 +1566,29 @@
                     nextAt = Date.now() + OVERLAY_REFRESH_MS;
                 });
             }
-            tabHora.onclick = () => setActive('hora'); tabLog.onclick = () => setActive('log');
-            tabs.appendChild(tabHora); tabs.appendChild(tabLog);
-            ov.appendChild(head); ov.appendChild(tabs); ov.appendChild(body); document.body.appendChild(ov); setActive('hora');
+            tabHora.onclick = () => setActive('hora'); tabLog.onclick = () => setActive('log'); tabErrado.onclick = () => setActive('errado');
+            // Durante o Onboarding (Dia 1/2/3) mostra as TRÊS abas: Acima em hora, Precisa logar e Logado errado.
+            // (Os dados de cada uma seguem as regras por dia; fora do Onboarding fica só "Acima em hora".)
+            tabs.appendChild(tabHora); if (isDay1() || isDay2or3()) { tabs.appendChild(tabLog); tabs.appendChild(tabErrado); }
+            ov.appendChild(head);
+            // Filtro de janela SELECIONÁVEL: só na página fixa do FCLM (functionRollup).
+            // No fluxo Onboarding (fora do FCLM) a janela é automática pelo turno.
+            if (onFclmReport()) {
+                const fRow = document.createElement('div');
+                fRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-shrink:0;padding:8px 14px;background:#fff;border-bottom:1px solid ' + C.border + ';';
+                const selMode = document.createElement('select');
+                selMode.style.cssText = 'flex:1;padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;cursor:pointer;';
+                [['day', '☀️ Dia (05:30–18:00)'], ['night', '🌙 Noite (18:00–05:30)'], ['d6to5', '🕕 (D-1)06:00–05:00 '], ['full', '🗓️ Dia todo (00:00–00:00)']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
+                const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
+                const previewEl = document.createElement('div'); previewEl.style.cssText = 'flex-shrink:0;padding:2px 14px 8px;background:#fff;border-bottom:1px solid ' + C.border + ';font-size:11px;font-weight:700;color:' + C.blue + ';';
+                const syncPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
+                const applyFilter = () => { currentFilter = { mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }; saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
+                selMode.onchange = applyFilter; inpDate.onchange = applyFilter;
+                fRow.appendChild(selMode); fRow.appendChild(inpDate);
+                syncPreview();
+                ov.appendChild(fRow); ov.appendChild(previewEl);
+            }
+            ov.appendChild(tabs); ov.appendChild(body); document.body.appendChild(ov); setActive('hora');
             lastSig = sig();
             // Ticker de 1s: mostra "atualiza a cada X · próxima em ..." e dispara o refresh no tempo.
             // Para sozinho quando o painel é removido do DOM.
