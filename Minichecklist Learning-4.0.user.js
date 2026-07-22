@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      5.0
 // @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. No fluxo Onboarding a janela é automática pelo turno; na página fixa do functionRollup há filtro de janela selecionável (Dia/Noite/06→05/Dia todo + data). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
 // @author       ladislke
 // @match        *://*/*
@@ -138,6 +138,13 @@
     const K_CYCLE = 'chkatv_cycle';   // { opDate, shift, selection, done }
     const K_POS   = 'chkatv_pos';
     const K_MODE  = 'chkatv_mode';
+    const K_CUSTOM = 'chkatv_custom'; // [{ id, t }] — itens pessoais adicionados pelo usuário
+
+    // ── Itens pessoais (aba "Adicionar") ─────────────────────────────────
+    function getCustom() { try { const v = JSON.parse(store.get(K_CUSTOM, '[]')); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+    function setCustom(a) { store.set(K_CUSTOM, JSON.stringify(a)); }
+    function addCustomItem(t, alert, url) { const a = getCustom(); a.push({ id: 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1000), t: t, alert: alert || null, url: url || null }); setCustom(a); }
+    function removeCustomItem(id) { setCustom(getCustom().filter(x => x.id !== id)); }
 
     function getPos() { try { return JSON.parse(store.get(K_POS, 'null')); } catch (e) { return null; } }
     function setPos(p) { store.set(K_POS, JSON.stringify(p)); }
@@ -198,7 +205,7 @@
     function toggleShift() { const c = ensureCycle(); c.shift = (c.shift === 'day') ? 'night' : 'day'; setCycle(c); warnedIds = {}; beepedIds = {}; }
 
     // ── Estado atual ─────────────────────────────────────────────────────
-    let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {}, listFilter = '';
+    let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {}, listFilter = '', chkTab = 'tasks';
     let audioCtx = null, centered = false, setupPostponed = false, lastListSig = '', radialEl = null;
     let ringEl = null, ringBadge = null, erradoCount = 0;   // anel vermelho de "logados errados"
     // Lembrete de hora cheia: guarda a última hora (0–23) em que o menu abriu sozinho,
@@ -227,6 +234,25 @@
                 overdue: !!ts && !isDone && !snoozed && t >= ts,
                 warning: !!ts && !isDone && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
             };
+        });
+        // Itens pessoais adicionados pelo usuário (aba "Adicionar") — done por dia como os demais.
+        // Alerta opcional (ci.alert = 'HH:MM') ancorado no dia operacional/turno, igual aos itens fixos.
+        getCustom().forEach(ci => {
+            const id = 'cust_' + ci.id;
+            const hhmm = ci.alert || null;
+            const ts = alertTs(c.opDate, shift, hhmm);
+            const secsLeft = ts ? Math.round((ts - t) / 1000) : null;
+            const isDone = !!done[id];
+            const snoozeUntil = snoozeMap[id] || 0;
+            const snoozed = !isDone && t < snoozeUntil;
+            items.push({
+                id: id, label: ci.t, url: ci.url || null, note: null, alert: hhmm, ts: ts,
+                done: isDone, secsLeft: secsLeft,
+                snoozed: snoozed, snoozeLeft: snoozed ? Math.round((snoozeUntil - t) / 1000) : 0,
+                overdue: !!ts && !isDone && !snoozed && t >= ts,
+                warning: !!ts && !isDone && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
+                custom: true, customId: ci.id,
+            });
         });
         const total = items.length, doneCount = items.filter(i => i.done).length;
         const pct = total ? Math.round((doneCount / total) * 100) : 0;
@@ -295,6 +321,7 @@
 
     // ── Elementos ────────────────────────────────────────────────────────
     let fab, fabWater, fabPct, menu, listEl, hdPct, hdSub, hdSubTxt, take, modeBtn, setupEl, helpEl, searchInput;
+    let chkTabBtnTasks, chkTabBtnAdd, addInput, chkSearchBar;
 
     function buildUI() {
         const sz = FAB_SIZE;
@@ -383,9 +410,24 @@
         searchInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') { searchInput.value = ''; listFilter = ''; lastListSig = ''; render(); } });
         searchBar.appendChild(searchInput);
         menu.appendChild(searchBar);
+        chkSearchBar = searchBar;
+
+        // Abas: Tarefas · ➕ Adicionar (itens pessoais).
+        const chkTabs = el('div', 'display:flex;background:#fff;border-bottom:1px solid #E8E8E8;');
+        const mkChkTab = (key, label) => {
+            const t = el('button', 'flex:1;background:transparent;border:none;border-bottom:3px solid transparent;'
+                + 'padding:9px 6px;cursor:pointer;font-size:12px;font-weight:800;color:#5B6B7B;' + AMZ, label);
+            t.addEventListener('click', (e) => { e.stopPropagation(); chkTab = key; lastListSig = ''; styleChkTabs(); render(); });
+            return t;
+        };
+        chkTabBtnTasks = mkChkTab('tasks', '✓ Tarefas');
+        chkTabBtnAdd = mkChkTab('add', '➕ Adicionar');
+        chkTabs.appendChild(chkTabBtnTasks); chkTabs.appendChild(chkTabBtnAdd);
+        menu.appendChild(chkTabs);
 
         listEl = el('div', 'flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;background:#EEF1F4;');
         menu.appendChild(listEl);
+        styleChkTabs();
 
         const ft = el('div', 'padding:9px 12px;background:#fff;border-top:1px solid #E8E8E8;display:flex;justify-content:space-between;'
             + 'align-items:center;gap:8px;font-size:11px;color:#7C8B99;');
@@ -624,6 +666,116 @@
     }
     function choose(sel) { setSelection(sel); hideSetup(); menuOpen = true; render(); }
 
+    // ── Abas do checklist (Tarefas · ➕ Adicionar) ───────────────────────
+    function styleChkTabs() {
+        [['tasks', chkTabBtnTasks], ['add', chkTabBtnAdd]].forEach(p => {
+            const t = p[1]; if (!t) return; const on = chkTab === p[0];
+            t.style.borderBottom = on ? '3px solid #FF9900' : '3px solid transparent';
+            t.style.color = on ? '#232F3E' : '#5B6B7B';
+            t.style.background = on ? '#FFF7E6' : 'transparent';
+        });
+        // A busca só faz sentido na aba de tarefas.
+        if (chkSearchBar) chkSearchBar.style.display = (chkTab === 'add') ? 'none' : 'flex';
+    }
+
+    // Monta a aba "➕ Adicionar": formulário (item + alerta opcional) + lista dos itens pessoais.
+    function buildAddView() {
+        if (!listEl) return;
+        listEl.textContent = '';
+
+        // ── Formulário ────────────────────────────────────────────────
+        const form = el('div', 'background:#fff;border:1px solid #E3E7EC;border-radius:11px;padding:11px;margin-bottom:14px;'
+            + 'box-shadow:0 2px 6px rgba(35,47,62,.06);');
+
+        addInput = el('input', 'width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #CBD3DB;border-radius:8px;'
+            + 'font-size:13px;background:#fff;color:#232F3E;' + AMZ);
+        addInput.type = 'text';
+        addInput.placeholder = 'Novo item…';
+        addInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd(); } });
+        form.appendChild(addInput);
+
+        // Campo de link (opcional): mostra o botão 🔗 na tarefa.
+        const urlInput = el('input', 'width:100%;box-sizing:border-box;margin-top:9px;padding:9px 10px;border:1px solid #CBD3DB;'
+            + 'border-radius:8px;font-size:13px;background:#fff;color:#232F3E;' + AMZ);
+        urlInput.type = 'text';
+        urlInput.placeholder = '🔗 Link (opcional)…';
+        urlInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); doAdd(); } });
+        form.appendChild(urlInput);
+
+        // Linha do alerta: toggle "🔔 Alerta" + horário (só habilita quando marcado).
+        const alertRow = el('div', 'display:flex;align-items:center;gap:8px;margin-top:9px;');
+        const alertLbl = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;'
+            + 'font-weight:700;color:#232F3E;user-select:none;' + AMZ);
+        const alertChk = el('input', 'width:16px;height:16px;accent-color:#FF9900;cursor:pointer;');
+        alertChk.type = 'checkbox';
+        alertLbl.appendChild(alertChk);
+        alertLbl.appendChild(el('span', '', '🔔 Alerta'));
+        alertRow.appendChild(alertLbl);
+
+        const timeInput = el('input', 'flex:0 0 auto;padding:7px 9px;border:1px solid #CBD3DB;border-radius:8px;'
+            + 'font-size:13px;background:#fff;color:#232F3E;opacity:.45;' + AMZ);
+        timeInput.type = 'time';
+        timeInput.disabled = true;
+        timeInput.addEventListener('keydown', (e) => e.stopPropagation());
+        alertRow.appendChild(timeInput);
+        alertChk.addEventListener('change', () => {
+            timeInput.disabled = !alertChk.checked;
+            timeInput.style.opacity = alertChk.checked ? '1' : '.45';
+            if (alertChk.checked) { if (!timeInput.value) timeInput.value = '12:00'; timeInput.focus(); }
+        });
+        form.appendChild(alertRow);
+
+        const addBtn = el('button', 'width:100%;margin-top:11px;background:#FF9900;border:none;border-radius:8px;color:#232F3E;'
+            + 'padding:9px 12px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '＋ Adicionar');
+        addBtn.addEventListener('click', (e) => { e.stopPropagation(); doAdd(); });
+        form.appendChild(addBtn);
+
+        function doAdd() {
+            const v = addInput.value.trim();
+            if (!v) { addInput.focus(); return; }
+            const alert = (alertChk.checked && timeInput.value) ? timeInput.value : null;
+            let url = urlInput.value.trim();
+            if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;   // completa o esquema se faltar
+            addCustomItem(v, alert, url || null);
+            lastListSig = ''; buildAddView(); render();
+            if (addInput) addInput.focus();
+        }
+
+        listEl.appendChild(form);
+
+        // ── Lista dos itens pessoais existentes ───────────────────────
+        const custom = getCustom();
+        if (!custom.length) {
+            listEl.appendChild(el('div', 'padding:16px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;line-height:1.5;',
+                'Sem itens pessoais.\nAdicione tarefas suas acima — elas aparecem na aba “✓ Tarefas”.'));
+            return;
+        }
+        custom.forEach(ci => {
+            const row = el('div', 'display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #E3E7EC;'
+                + 'border-radius:9px;padding:9px 10px;margin-bottom:7px;');
+            const mid = el('div', 'flex:1 1 auto;min-width:0;');
+            mid.appendChild(el('div', 'font-size:13px;font-weight:700;color:#232F3E;word-break:break-word;' + AMZ, ci.t));
+            const meta = [ci.alert ? ('⏰ Alerta ' + ci.alert) : '— sem alerta'];
+            if (ci.url) meta.push('🔗 com link');
+            mid.appendChild(el('div', 'font-size:10.5px;font-weight:700;margin-top:2px;color:' + (ci.alert ? '#E88B00' : '#9AA7B4') + ';',
+                meta.join('  ·  ')));
+            row.appendChild(mid);
+            if (ci.url) {
+                const lb = el('button', 'flex:0 0 auto;background:#fff;border:1px solid #FF9900;color:#FF9900;border-radius:8px;'
+                    + 'padding:6px 9px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '🔗');
+                lb.title = 'Abrir link';
+                lb.addEventListener('click', (e) => { e.stopPropagation(); openUrl(ci.url); });
+                row.appendChild(lb);
+            }
+            const rm = el('button', 'flex:0 0 auto;background:#fff;border:1.5px solid #CC0000;border-radius:8px;color:#CC0000;'
+                + 'padding:6px 9px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '✕');
+            rm.title = 'Remover este item pessoal';
+            rm.addEventListener('click', (e) => { e.stopPropagation(); removeCustomItem(ci.id); lastListSig = ''; buildAddView(); render(); });
+            row.appendChild(rm);
+            listEl.appendChild(row);
+        });
+    }
+
     // ── Linha da tarefa ──────────────────────────────────────────────────
     let hoveredLinkId = null;   // mantém o botão 🔗 preenchido mesmo quando a lista é reconstruída
     function buildRow(i) {
@@ -668,6 +820,13 @@
             nb.title = 'Abrir verificador_treinamento.exe';
             nb.addEventListener('click', (e) => { e.stopPropagation(); tryLaunchExe(); });
             row.appendChild(nb);
+        }
+        if (i.custom) {
+            const rm = el('button', 'flex:none;background:#fff;border:1px solid #cc0000;color:#cc0000;border-radius:8px;'
+                + 'padding:7px 9px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '✕');
+            rm.title = 'Remover este item pessoal';
+            rm.addEventListener('click', (e) => { e.stopPropagation(); removeCustomItem(i.customId); lastListSig = ''; render(); });
+            row.appendChild(rm);
         }
         return row;
     }
@@ -825,19 +984,29 @@
 
         if (menuOpen) {
             hdPct.textContent = s.pct + '% (' + s.doneCount + '/' + s.total + ')';
-            // Filtra pelo texto do campo de busca (por rótulo da tarefa).
-            const visible = listFilter ? s.items.filter(i => i.label.toLowerCase().includes(listFilter)) : s.items;
-            // Só reconstrói a lista quando o estado visível muda (evita churn de DOM a cada tick).
-            const sig = 'f=' + listFilter + '|' + visible.map(i => i.id + (i.done ? 'D' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
-                + (i.overdue ? 'o' : i.warning ? 'w' : i.alert ? 'a' + i.secsLeft : '')).join('|');
-            if (sig !== lastListSig || listEl.childElementCount === 0) {
-                lastListSig = sig;
-                listEl.textContent = '';
-                if (!visible.length) {
-                    listEl.appendChild(el('div', 'padding:16px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;',
-                        listFilter ? 'Nenhuma tarefa encontrada para “' + searchInput.value.trim() + '”' : 'Sem tarefas'));
-                } else {
-                    visible.forEach(i => listEl.appendChild(buildRow(i)));
+            if (chkTab === 'add') {
+                // Aba "➕ Adicionar": só reconstrói quando a lista de itens pessoais muda
+                // (preserva o foco do input entre ticks de 1s).
+                const sig = 'add|' + getCustom().map(c => c.id + ':' + c.t + ':' + (c.alert || '') + ':' + (c.url || '')).join('|');
+                if (sig !== lastListSig || listEl.childElementCount === 0) {
+                    lastListSig = sig;
+                    buildAddView();
+                }
+            } else {
+                // Aba "✓ Tarefas": lista de tarefas com filtro de busca.
+                const visible = listFilter ? s.items.filter(i => i.label.toLowerCase().includes(listFilter)) : s.items;
+                // Só reconstrói a lista quando o estado visível muda (evita churn de DOM a cada tick).
+                const sig = 'tasks|f=' + listFilter + '|' + visible.map(i => i.id + (i.done ? 'D' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
+                    + (i.overdue ? 'o' : i.warning ? 'w' : i.alert ? 'a' + i.secsLeft : '')).join('|');
+                if (sig !== lastListSig || listEl.childElementCount === 0) {
+                    lastListSig = sig;
+                    listEl.textContent = '';
+                    if (!visible.length) {
+                        listEl.appendChild(el('div', 'padding:16px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;',
+                            listFilter ? 'Nenhuma tarefa encontrada para “' + searchInput.value.trim() + '”' : 'Sem tarefas'));
+                    } else {
+                        visible.forEach(i => listEl.appendChild(buildRow(i)));
+                    }
                 }
             }
         } else { lastListSig = ''; }
