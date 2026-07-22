@@ -106,9 +106,6 @@
             { t: 'Verificou a conformidade da planilha de Embaixadores? (ao menos 1x por escala)', url: U.planEmb },
             { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE },
             { t: 'Acompanhando os associados LCs? (PA:10 · Support:20)', url: U.netlify },
-            { t: 'Envio de horas via Slack (1/3)', url: U.funcRollAll, day: '09:00', night: '21:00' },
-            { t: 'Envio de horas via Slack (2/3)', url: U.funcRollAll, day: '13:00', night: '01:00' },
-            { t: 'Envio de horas via Slack (3/3)', url: U.funcRollAll, day: '17:00', night: '04:00' },
             { t: 'Enviar TTs pendentes para o Slack', url: U.tickets, day: '16:30', night: '04:30' },
             { t: 'Enviou o checklist e o EOS?', url: U.checklist, day: '18:00', night: '05:00' },
         ],
@@ -202,7 +199,8 @@
 
     // ── Estado atual ─────────────────────────────────────────────────────
     let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {}, listFilter = '';
-    let audioCtx = null, centered = false, setupPostponed = false, lastListSig = '';
+    let audioCtx = null, centered = false, setupPostponed = false, lastListSig = '', radialEl = null;
+    let ringEl = null, ringBadge = null, erradoCount = 0;   // anel vermelho de "logados errados"
     // Lembrete de hora cheia: guarda a última hora (0–23) em que o menu abriu sozinho,
     // para abrir só 1x por hora quando o overlay está no modo círculo (menu fechado).
     let lastAutoOpenHour = new Date().getHours();
@@ -239,6 +237,7 @@
 
     // ── Helpers de UI (CSSOM — seguro sob CSP) ───────────────────────────
     const FF = "font-family:'Segoe UI',Arial,sans-serif;";
+    const AMZ = "font-family:'Amazon Ember','Segoe UI',Arial,sans-serif;";
     function el(tag, cssText, text) {
         const e = document.createElement(tag);
         if (cssText) e.style.cssText = cssText;
@@ -328,29 +327,33 @@
         fadeIn(fab, 260, -6);
         wireDrag();
 
-        menu = el('div', 'position:fixed;top:96px;left:16px;z-index:2147483000;width:340px;background:#1b2733;'
-            + 'color:#e6edf3;border:2px solid #ff9900;border-radius:14px;box-shadow:0 16px 40px rgba(0,0,0,.5);'
-            + FF + 'overflow:hidden;display:none;');
+        // Paleta clara (padrão Amazon), igual ao Minichecklist Mecanismos.
+        menu = el('div', 'position:fixed;bottom:16px;left:16px;z-index:2147483000;width:340px;max-height:82vh;'
+            + 'background:#EEF1F4;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.45);overflow:hidden;display:none;flex-direction:column;' + AMZ);
         menu.id = 'chkatv-menu';
 
-        const hd = el('div', 'background:linear-gradient(135deg,#2c3e50,#1b2733);padding:11px 12px;'
-            + 'border-bottom:2px solid #ff9900;');
+        const hd = el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);padding:12px 14px;color:#fff;');
         const hdTop = el('div', 'display:flex;align-items:center;gap:8px;');
         hdTop.appendChild(el('span', 'font-size:16px;', '🗒️'));
-        hdTop.appendChild(el('span', 'font-size:13px;font-weight:800;flex:1;', 'Mini checklist'));
-        const help = el('button', 'width:22px;height:22px;border-radius:50%;border:1px solid #8aa1b6;background:transparent;'
-            + 'color:#c2d2e0;font-weight:800;cursor:pointer;line-height:1;padding:0;flex:none;' + FF, '?');
+        hdTop.appendChild(el('span', 'font-size:14px;font-weight:800;flex:1;', 'Mini checklist'));
+        const help = el('button', 'width:24px;height:24px;border-radius:8px;border:none;background:rgba(255,255,255,.14);'
+            + 'color:#fff;font-weight:800;cursor:pointer;line-height:1;padding:0;flex:none;' + AMZ, '?');
         help.title = 'Sobre este checklist';
         help.setAttribute('aria-label', 'Sobre este checklist');
         help.addEventListener('click', (e) => { e.stopPropagation(); toggleHelp(); });
         hdTop.appendChild(help);
-        hdPct = el('span', 'font-size:12px;font-weight:800;color:#ffce7a;margin-left:6px;', '0%');
+        hdPct = el('span', 'font-size:12px;font-weight:800;color:#FEBD69;margin-left:6px;', '0%');
         hdTop.appendChild(hdPct);
+        const mClose = el('button', 'width:24px;height:24px;border-radius:8px;border:none;background:#cc0000;'
+            + 'color:#fff;font-weight:800;cursor:pointer;line-height:1;padding:0;flex:none;margin-left:2px;' + AMZ, '✕');
+        mClose.title = 'Fechar (voltar ao círculo)';
+        mClose.addEventListener('click', (e) => { e.stopPropagation(); menuOpen = false; render(); });
+        hdTop.appendChild(mClose);
         hd.appendChild(hdTop);
-        hdSub = el('div', 'display:flex;align-items:center;gap:8px;font-size:10.5px;color:#9fb3c8;margin-top:4px;');
+        hdSub = el('div', 'display:flex;align-items:center;gap:8px;font-size:11px;color:#CBD8E6;margin-top:7px;');
         hdSubTxt = el('span', 'flex:1;', '');
-        const shiftBtn = el('button', 'flex:none;background:#12202e;border:1px solid #52708c;color:#c2d2e0;border-radius:7px;'
-            + 'padding:3px 8px;cursor:pointer;font-size:10px;font-weight:700;' + FF, '⇄ Turno');
+        const shiftBtn = el('button', 'flex:none;background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:8px;'
+            + 'padding:4px 9px;cursor:pointer;font-size:10.5px;font-weight:700;' + AMZ, '⇄ Turno');
         shiftBtn.title = 'Alternar turno (Day/Night) manualmente';
         shiftBtn.setAttribute('aria-label', 'Alternar turno Day ou Night');
         shiftBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleShift(); render(); });
@@ -359,10 +362,10 @@
         menu.appendChild(hd);
 
         const modeBar = el('div', 'display:flex;align-items:center;gap:8px;padding:8px 12px;'
-            + 'border-bottom:1px solid #2b3d4f;font-size:11px;color:#8aa1b6;');
-        modeBar.appendChild(el('span', 'flex:none;', 'Modo:'));
-        modeBtn = el('button', 'flex:1;background:#12202e;border:1px solid #52708c;color:#e6edf3;border-radius:8px;'
-            + 'padding:6px 8px;cursor:pointer;font-size:11.5px;font-weight:800;' + FF, 'Alerta');
+            + 'background:#fff;border-bottom:1px solid #E8E8E8;font-size:11px;color:#5B6B7B;');
+        modeBar.appendChild(el('span', 'flex:none;font-weight:700;', 'Modo:'));
+        modeBtn = el('button', 'flex:1;background:#EAEDF0;border:1px solid #CBD3DB;color:#232F3E;border-radius:8px;'
+            + 'padding:6px 8px;cursor:pointer;font-size:11.5px;font-weight:800;' + AMZ, 'Alerta');
         modeBtn.title = 'Alternar entre Alerta (trava + som) e Silencioso (sem travar)';
         modeBtn.setAttribute('aria-label', 'Alternar modo Alerta ou Silencioso');
         modeBtn.addEventListener('click', () => { setMode(getMode() === 'alert' ? 'silent' : 'alert'); if (getMode() === 'silent') hideTakeover(); render(); });
@@ -370,9 +373,9 @@
         menu.appendChild(modeBar);
 
         // Campo de busca: filtra as tarefas da lista pelo texto digitado.
-        const searchBar = el('div', 'display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #2b3d4f;');
-        searchBar.appendChild(el('span', 'flex:none;font-size:12px;opacity:.8;', '🔎'));
-        searchInput = el('input', 'flex:1;min-width:0;background:#12202e;border:1px solid #52708c;color:#e6edf3;border-radius:8px;padding:6px 10px;font-size:12px;outline:none;' + FF);
+        const searchBar = el('div', 'display:flex;align-items:center;gap:8px;padding:8px 12px;background:#fff;border-bottom:2px solid #FF9900;');
+        searchBar.appendChild(el('span', 'flex:none;font-size:12px;opacity:.7;', '🔎'));
+        searchInput = el('input', 'flex:1;min-width:0;background:#fff;border:1px solid #CBD3DB;color:#232F3E;border-radius:8px;padding:6px 10px;font-size:12px;outline:none;' + AMZ);
         searchInput.type = 'text';
         searchInput.placeholder = 'Pesquisar tarefa…';
         searchInput.setAttribute('aria-label', 'Pesquisar tarefa na lista');
@@ -381,13 +384,13 @@
         searchBar.appendChild(searchInput);
         menu.appendChild(searchBar);
 
-        listEl = el('div', 'max-height:52vh;overflow:auto;padding:6px;');
+        listEl = el('div', 'flex:1 1 auto;min-height:0;overflow:auto;padding:10px 12px;background:#EEF1F4;');
         menu.appendChild(listEl);
 
-        const ft = el('div', 'padding:9px 12px;border-top:1px solid #2b3d4f;display:flex;justify-content:space-between;'
-            + 'align-items:center;gap:8px;font-size:11px;color:#8aa1b6;');
-        const chg = el('button', 'background:transparent;border:1px solid #52708c;color:#c2d2e0;border-radius:7px;'
-            + 'padding:5px 9px;cursor:pointer;font-size:11px;font-weight:700;' + FF, '↺ Trocar fluxo');
+        const ft = el('div', 'padding:9px 12px;background:#fff;border-top:1px solid #E8E8E8;display:flex;justify-content:space-between;'
+            + 'align-items:center;gap:8px;font-size:11px;color:#7C8B99;');
+        const chg = el('button', 'background:#EAEDF0;border:1px solid #CBD3DB;color:#232F3E;border-radius:8px;'
+            + 'padding:5px 9px;cursor:pointer;font-size:11px;font-weight:700;' + AMZ, '↺ Trocar fluxo');
         chg.title = 'Perguntar novamente (Onboarding / PA / Support)';
         chg.setAttribute('aria-label', 'Trocar fluxo (perguntar novamente)');
         chg.addEventListener('click', () => { reAsk(); render(); });
@@ -397,17 +400,95 @@
         document.body.appendChild(menu);
 
         applyPos();
+        buildRing();
     }
 
     // ── Posicionamento + arrastar ────────────────────────────────────────
+    // Menu do checklist fixo no canto inferior-esquerdo (mesmo lugar do painel Onboarding Hours).
     function positionMenu() {
-        if (!fab || !menu) return;
+        if (!menu) return;
+        menu.style.left = '16px';
+        menu.style.right = 'auto';
+        menu.style.top = 'auto';
+        menu.style.bottom = '16px';
+    }
+    // Um overlay (checklist OU onboarding hours) está aberto? → o círculo some.
+    function overlayOpen() { return menuVisible || (onbModule && onbModule.isOpen()); }
+    function applyGroupVisibility() {
+        const hide = overlayOpen();
+        if (fab) fab.style.display = hide ? 'none' : '';
+        if (hide) { if (ringEl) ringEl.style.display = 'none'; if (ringBadge) ringBadge.style.display = 'none'; }
+    }
+
+    // ── Anel vermelho de "logados errados" ao redor do círculo ──────────
+    const RING_EXTRA = 12;
+    function buildRing() {
+        if (document.getElementById('chkatv-ring')) { ringEl = document.getElementById('chkatv-ring'); ringBadge = document.getElementById('chkatv-ring-badge'); return; }
+        ringEl = el('div', 'position:fixed;z-index:2147483009;pointer-events:none;border-radius:50%;'
+            + 'box-sizing:border-box;border:3px solid transparent;display:none;');
+        ringEl.id = 'chkatv-ring';
+        document.body.appendChild(ringEl);
+        ringBadge = el('div', 'position:fixed;z-index:2147483012;pointer-events:none;min-width:20px;height:20px;'
+            + 'padding:0 6px;border-radius:10px;background:#cc0000;color:#fff;font-size:11px;font-weight:800;'
+            + 'display:none;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.45);' + FF);
+        ringBadge.id = 'chkatv-ring-badge';
+        document.body.appendChild(ringBadge);
+        positionRing();
+    }
+    function positionRing() {
+        if (!fab) return;
         const r = fab.getBoundingClientRect();
-        const mw = menu.offsetWidth || 340, mh = menu.offsetHeight || 320;
-        let left = r.left, top = r.bottom + 8;
-        if (top + mh > window.innerHeight) top = Math.max(8, r.top - 8 - mh);
-        left = Math.min(Math.max(8, left), window.innerWidth - mw - 8);
-        menu.style.left = left + 'px'; menu.style.top = top + 'px';
+        if (ringEl) {
+            ringEl.style.left = Math.round(r.left - RING_EXTRA / 2) + 'px';
+            ringEl.style.top = Math.round(r.top - RING_EXTRA / 2) + 'px';
+            ringEl.style.width = Math.round(r.width + RING_EXTRA) + 'px';
+            ringEl.style.height = Math.round(r.height + RING_EXTRA) + 'px';
+        }
+        if (ringBadge) { ringBadge.style.left = Math.round(r.right - 12) + 'px'; ringBadge.style.top = Math.round(r.top - 6) + 'px'; }
+    }
+    // Só aparece quando há "logados errados" (>0), no contexto de Onboarding/FCLM, e o círculo visível.
+    function updateRing() {
+        if (!ringEl) return;
+        const c = ensureCycle();
+        const onbAvail = c.selection && (onFclmOnbReport() || /^onb/.test(c.selection || ''));
+        if (!onbAvail || overlayOpen() || erradoCount <= 0) {
+            ringEl.style.display = 'none'; if (ringBadge) ringBadge.style.display = 'none'; stopPulse(ringEl);
+            return;
+        }
+        positionRing();
+        ringEl.style.display = 'block';
+        ringEl.style.borderColor = '#ff4d4d';
+        ringEl.style.boxShadow = '0 0 10px rgba(204,0,0,.6)';
+        startPulse(ringEl);
+        ringBadge.textContent = String(erradoCount);
+        ringBadge.style.display = 'flex';
+    }
+
+    // ── Mini-menu radial (Checklist / Onboarding Hours) ─────────────────
+    function hideRadial() { if (!radialEl) return; const a = radialEl; radialEl = null; fadeOut(a, 120, () => a.remove()); }
+    function showRadial() {
+        if (radialEl || !fab) return;
+        const r = fab.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2, rad = r.width / 2 + 34, sz = 46;
+        radialEl = el('div', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483060;' + FF);
+        radialEl.addEventListener('click', hideRadial);
+        const mk = (icon, title, angleDeg, cb, bg) => {
+            const a = angleDeg * Math.PI / 180;
+            const bx = cx + rad * Math.cos(a) - sz / 2, by = cy + rad * Math.sin(a) - sz / 2;
+            const b = el('button', 'position:fixed;width:' + sz + 'px;height:' + sz + 'px;border-radius:50%;cursor:pointer;'
+                + 'display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;border:2px solid rgba(255,255,255,.2);'
+                + 'box-shadow:0 6px 16px rgba(0,0,0,.45);background:' + bg + ';' + FF, icon);
+            b.style.left = Math.round(Math.min(Math.max(4, bx), window.innerWidth - sz - 4)) + 'px';
+            b.style.top = Math.round(Math.min(Math.max(4, by), window.innerHeight - sz - 4)) + 'px';
+            b.title = title;
+            b.addEventListener('click', (e) => { e.stopPropagation(); hideRadial(); cb(); });
+            try { b.animate([{ opacity: 0, transform: 'translate(' + Math.round(cx - bx - sz / 2) + 'px,' + Math.round(cy - by - sz / 2) + 'px) scale(.4)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'cubic-bezier(.34,1.4,.4,1)' }); } catch (e2) {}
+            radialEl.appendChild(b);
+        };
+        mk('🗒️', 'Abrir Checklist', -26, () => { if (onbModule) onbModule.closeAll(); menuOpen = true; render(); }, 'linear-gradient(145deg,#37475A,#232F3E)');
+        mk('📊', 'Abrir Onboarding Hours', 26, () => { menuOpen = false; setMenuVisible(false); if (onbModule) onbModule.openOverlay(); render(); }, 'linear-gradient(145deg,#f59e0b,#c77800)');
+        document.body.appendChild(radialEl);
+        fadeIn(radialEl, 120);
     }
     function applyPos() {
         let left = 16, top = 16;
@@ -416,6 +497,7 @@
         left = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - FAB_SIZE));
         top = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - FAB_SIZE));
         fab.style.left = left + 'px'; fab.style.top = top + 'px';
+        positionRing();
         positionMenu();
     }
     let dragging = false, moved = false, offX = 0, offY = 0, docDragWired = false;
@@ -436,6 +518,7 @@
             left = Math.min(Math.max(0, left), window.innerWidth - fab.offsetWidth);
             top = Math.min(Math.max(0, top), window.innerHeight - fab.offsetHeight);
             fab.style.left = left + 'px'; fab.style.top = top + 'px';
+            positionRing();
             positionMenu();
         });
         document.addEventListener('mouseup', () => {
@@ -446,7 +529,12 @@
             else {
                 const c = ensureCycle();
                 if (!c.selection) { setupPostponed = false; showSetup(); }   // sem fluxo → reabre o setup
-                else { menuOpen = !menuOpen; }
+                else {
+                    const onbAvail = onFclmOnbReport() || /^onb/.test(c.selection || '');
+                    if (radialEl) hideRadial();
+                    else if (onbAvail) showRadial();   // 2 opções: Checklist / Onboarding Hours
+                    else menuOpen = true;              // fluxos sem onboarding → abre o checklist direto
+                }
                 render();
             }
         });
@@ -466,18 +554,21 @@
     function toggleHelp() {
         if (helpEl) { const h = helpEl; helpEl = null; fadeOut(h, 140, () => h.remove()); return; }
         helpEl = el('div', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483500;background:rgba(5,10,18,.6);'
-            + 'display:flex;align-items:center;justify-content:center;' + FF);
-        const box = el('div', 'width:min(460px,90vw);background:#12202e;border:2px solid #ff9900;border-radius:14px;'
-            + 'padding:22px;color:#e6edf3;box-shadow:0 20px 60px rgba(0,0,0,.6);');
-        box.appendChild(el('div', 'font-size:16px;font-weight:800;color:#ffce7a;margin-bottom:10px;', 'ℹ️ Sobre este checklist'));
-        box.appendChild(el('p', 'font-size:13px;line-height:1.6;color:#c2d2e0;margin:0 0 10px;',
+            + 'display:flex;align-items:center;justify-content:center;' + AMZ);
+        const box = el('div', 'width:min(460px,90vw);background:#EEF1F4;border-radius:14px;overflow:hidden;'
+            + 'box-shadow:0 20px 60px rgba(0,0,0,.5);');
+        box.appendChild(el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);color:#fff;padding:14px 18px;'
+            + 'font-size:16px;font-weight:800;', 'ℹ️ Sobre este checklist'));
+        const bd = el('div', 'padding:18px;');
+        bd.appendChild(el('p', 'font-size:13px;line-height:1.6;color:#37475A;margin:0 0 10px;',
             'Este mini-checklist serve para NÃO esquecer as tarefas de maior impacto do turno. Marque cada item ao concluir (clique no texto ou na caixa). Itens com horário disparam alerta pela hora atual — no modo Alerta a tela é travada e toca um bip 1 minuto antes. Use os botões 🔗 para abrir cada atividade.'));
-        box.appendChild(el('p', 'font-size:12.5px;line-height:1.6;color:#8aa1b6;margin:0 0 16px;',
+        bd.appendChild(el('p', 'font-size:12.5px;line-height:1.6;color:#5B6B7B;margin:0 0 16px;',
             'Quem não tiver o verificador_treinamento.exe na pasta Documentos deve falar com os analistas na mesa de Learning.'));
-        const close = el('button', 'background:#ff9900;color:#1b2733;border:none;border-radius:9px;padding:9px 18px;'
-            + 'font-weight:800;cursor:pointer;' + FF, 'Entendi');
+        const close = el('button', 'display:block;margin-left:auto;background:#FF9900;color:#131921;border:1px solid #E88B00;border-radius:9px;padding:9px 18px;'
+            + 'font-weight:800;cursor:pointer;' + AMZ, 'Entendi');
         close.addEventListener('click', () => toggleHelp());
-        box.appendChild(close);
+        bd.appendChild(close);
+        box.appendChild(bd);
         helpEl.appendChild(box);
         helpEl.addEventListener('click', (e) => { if (e.target === helpEl) toggleHelp(); });
         document.body.appendChild(helpEl);
@@ -534,41 +625,46 @@
     function choose(sel) { setSelection(sel); hideSetup(); menuOpen = true; render(); }
 
     // ── Linha da tarefa ──────────────────────────────────────────────────
+    let hoveredLinkId = null;   // mantém o botão 🔗 preenchido mesmo quando a lista é reconstruída
     function buildRow(i) {
-        const row = el('div', 'display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;'
-            + 'cursor:pointer;transition:background .12s;');
-        row.addEventListener('mouseenter', () => row.style.background = '#243444');
-        row.addEventListener('mouseleave', () => row.style.background = 'transparent');
+        const accent = i.done ? '#27AE60' : (i.overdue ? '#CC0000' : (i.warning ? '#E88B00' : '#CBD3DB'));
+        const row = el('div', 'display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E8E8E8;'
+            + 'border-left:4px solid ' + accent + ';border-radius:10px;padding:9px 11px;margin-bottom:8px;'
+            + 'box-shadow:0 2px 6px rgba(35,47,62,.06);cursor:pointer;opacity:' + (i.done ? '.7' : '1') + ';');
+        row.addEventListener('mouseenter', () => row.style.background = '#F7FAFF');
+        row.addEventListener('mouseleave', () => row.style.background = '#fff');
         row.addEventListener('click', () => { toggleDone(i.id); render(); });
 
-        const bColor = i.done ? '#27ae60' : (i.overdue ? '#cc0000' : '#52708c');
-        const box = el('span', 'width:20px;height:20px;border-radius:6px;border:2px solid ' + bColor + ';'
-            + 'background:' + (i.done ? '#27ae60' : 'transparent') + ';flex:none;display:flex;align-items:center;'
-            + 'justify-content:center;font-size:13px;color:#0d1b2a;', i.done ? '✔' : '');
+        const box = el('span', 'width:20px;height:20px;border-radius:6px;border:2px solid ' + (i.done ? '#27AE60' : (i.overdue ? '#CC0000' : '#B9C4CE')) + ';'
+            + 'background:' + (i.done ? '#27AE60' : '#fff') + ';flex:none;display:flex;align-items:center;'
+            + 'justify-content:center;font-size:13px;color:#fff;', i.done ? '✔' : '');
         row.appendChild(box);
 
         const mid = el('div', 'flex:1;min-width:0;');
-        mid.appendChild(el('div', 'font-size:12.5px;line-height:1.35;'
-            + (i.done ? 'text-decoration:line-through;color:#8aa1b6;' : 'color:#e6edf3;'), i.label));
+        mid.appendChild(el('div', 'font-size:13px;font-weight:800;line-height:1.3;'
+            + (i.done ? 'text-decoration:line-through;color:#8090A0;' : 'color:#232F3E;'), i.label));
         let stTxt, stColor;
-        if (i.done) { stTxt = '✔ Concluído'; stColor = '#46e08a'; }
-        else if (i.snoozed) { stTxt = '😴 Adiado (' + fmtLeft(i.snoozeLeft) + ')'; stColor = '#9fb3c8'; }
-        else if (i.overdue) { stTxt = '⛔ Atrasado (alerta ' + i.alert + ')'; stColor = '#ff6b6b'; }
-        else if (i.warning) { stTxt = '⏰ Faça agora — alerta ' + i.alert + ' (faltam ' + fmtLeft(i.secsLeft) + ')'; stColor = '#ffce7a'; }
-        else if (i.alert) { stTxt = '⏰ Alerta ' + i.alert + (i.secsLeft > 0 ? ' (em ' + fmtLeft(i.secsLeft) + ')' : ''); stColor = '#9fb3c8'; }
-        else { stTxt = '— sem alerta'; stColor = '#6b8199'; }
+        if (i.done) { stTxt = '✔ Concluído'; stColor = '#1E8449'; }
+        else if (i.snoozed) { stTxt = '😴 Adiado (' + fmtLeft(i.snoozeLeft) + ')'; stColor = '#7C8B99'; }
+        else if (i.overdue) { stTxt = '⛔ Atrasado (alerta ' + i.alert + ')'; stColor = '#CC0000'; }
+        else if (i.warning) { stTxt = '⏰ Faça agora — alerta ' + i.alert + ' (faltam ' + fmtLeft(i.secsLeft) + ')'; stColor = '#E88B00'; }
+        else if (i.alert) { stTxt = '⏰ Alerta ' + i.alert + (i.secsLeft > 0 ? ' (em ' + fmtLeft(i.secsLeft) + ')' : ''); stColor = '#7C8B99'; }
+        else { stTxt = '— sem alerta'; stColor = '#9AA7B4'; }
         mid.appendChild(el('div', 'font-size:10px;font-weight:700;margin-top:2px;color:' + stColor + ';', stTxt));
         row.appendChild(mid);
 
         if (i.url) {
-            const lb = el('button', 'flex:none;background:#12202e;border:1px solid #52708c;color:#ffce7a;border-radius:8px;'
-                + 'padding:7px 9px;cursor:pointer;font-size:13px;' + FF, '🔗');
+            const on = (hoveredLinkId === i.id);
+            const lb = el('button', 'flex:none;background:' + (on ? '#FF9900' : '#fff') + ';border:1px solid #FF9900;color:' + (on ? '#131921' : '#FF9900') + ';border-radius:8px;'
+                + 'padding:7px 9px;cursor:pointer;font-size:13px;font-weight:800;transition:background .2s ease,color .2s ease;' + AMZ, '🔗');
             lb.title = 'Abrir atividade';
+            lb.addEventListener('mouseenter', () => { hoveredLinkId = i.id; lb.style.background = '#FF9900'; lb.style.color = '#131921'; });
+            lb.addEventListener('mouseleave', () => { hoveredLinkId = null; lb.style.background = '#fff'; lb.style.color = '#FF9900'; });
             lb.addEventListener('click', (e) => { e.stopPropagation(); openUrl(i.url); });
             row.appendChild(lb);
         } else if (i.note) {
-            const nb = el('button', 'flex:none;background:#12202e;border:1px solid #52708c;color:#c2d2e0;border-radius:8px;'
-                + 'padding:7px 9px;cursor:pointer;font-size:13px;' + FF, '📄');
+            const nb = el('button', 'flex:none;background:#EAEDF0;border:1px solid #CBD3DB;color:#232F3E;border-radius:8px;'
+                + 'padding:7px 9px;cursor:pointer;font-size:13px;' + AMZ, '📄');
             nb.title = 'Abrir verificador_treinamento.exe';
             nb.addEventListener('click', (e) => { e.stopPropagation(); tryLaunchExe(); });
             row.appendChild(nb);
@@ -617,7 +713,7 @@
     function setMenuVisible(v) {
         if (v === menuVisible) return;
         menuVisible = v;
-        if (v) { menu.style.display = 'block'; positionMenu(); fadeIn(menu, 170, -8); }
+        if (v) { menu.style.display = 'flex'; positionMenu(); fadeIn(menu, 170, -8); }
         else { fadeOut(menu, 140, () => { if (!menuVisible) menu.style.display = 'none'; }); }
     }
 
@@ -676,6 +772,7 @@
     // ── Render (a cada tick) ─────────────────────────────────────────────
     function render() {
         if (!fab || !document.body.contains(fab)) buildUI();
+        if (!ringEl || !document.body.contains(ringEl)) buildRing();
         const s = computeState();
         const mode = getMode();
 
@@ -737,7 +834,7 @@
                 lastListSig = sig;
                 listEl.textContent = '';
                 if (!visible.length) {
-                    listEl.appendChild(el('div', 'padding:14px 10px;text-align:center;color:#8aa1b6;font-size:12px;',
+                    listEl.appendChild(el('div', 'padding:16px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;',
                         listFilter ? 'Nenhuma tarefa encontrada para “' + searchInput.value.trim() + '”' : 'Sem tarefas'));
                 } else {
                     visible.forEach(i => listEl.appendChild(buildRow(i)));
@@ -751,6 +848,9 @@
             s.items.forEach(i => { if (!i.done && i.ts && i.secsLeft > 0 && i.secsLeft <= SOUND_LEAD_SEC && !beepedIds[i.id]) { beepedIds[i.id] = true; beep(); } });
         }
         if (mode === 'alert' && s.overdue.length) showTakeover(s.overdue[0]); else hideTakeover();
+
+        updateRing();             // anel vermelho de "logados errados"
+        applyGroupVisibility();   // some com o círculo quando um overlay (checklist/onboarding) está aberto
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -946,6 +1046,14 @@
                 else errs++;
                 done++; finish();
             }));
+        }
+        // Cache do relatório: o poll (a cada 3 min) busca fresco e alimenta o cache;
+        // abrir o overlay reusa o cache (instantâneo) se recente. force=true sempre rebusca.
+        let repCache = null, repCacheTs = 0;
+        const REP_TTL_MS = 3 * 60 * 1000;
+        function getReport(force, cb) {
+            if (!force && repCache && (Date.now() - repCacheTs) < REP_TTL_MS) { cb(repCache, null); return; }
+            fetchReport((r, err) => { if (r) { repCache = r; repCacheTs = Date.now(); } cb(r, err); });
         }
         function injectUICss() {
             if (document.getElementById('onb-ui-css')) return;
@@ -1346,7 +1454,7 @@
             head.style.cssText = 'background:' + C.headerGrad + ';color:' + C.white + ';padding:16px 22px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid ' + (accent || C.accent) + ';flex-shrink:0;';
             head.innerHTML = '<div><div style="font-size:16px;font-weight:700;">' + title + '</div>' + (sub ? '<div style="font-size:11px;color:' + C.gold + ';margin-top:3px;">' + sub + '</div>' : '') + '</div>';
             const btnX = document.createElement('button'); btnX.textContent = '✖';
-            btnX.style.cssText = 'background:rgba(255,255,255,0.08);color:#fff;border:none;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:14px;transition:all .15s ease;';
+            btnX.style.cssText = 'background:' + C.red + ';color:#fff;border:none;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:14px;transition:all .15s ease;';
             btnX.onmouseenter = () => { btnX.style.background = C.red; btnX.style.transform = 'rotate(90deg)'; };
             btnX.onmouseleave = () => { btnX.style.background = 'rgba(255,255,255,0.08)'; btnX.style.transform = 'none'; };
             btnX.onclick = () => box.closest('[id]').remove();
@@ -1516,7 +1624,7 @@
             let nextAt = Date.now() + OVERLAY_REFRESH_MS;
             recompute();
             const ov = document.createElement('div'); ov.id = 'onb-overlay';
-            ov.style.cssText = 'position:fixed;left:16px;bottom:56px;z-index:9997;width:390px;max-width:calc(100vw - 32px);max-height:64vh;display:flex;flex-direction:column;background:#fff;border:2px solid ' + C.accent + ';border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,0.4);font-family:\'Amazon Ember\',Arial,sans-serif;overflow:hidden;transform-origin:bottom left;animation:onbRise .3s cubic-bezier(.18,.9,.32,1.2);';
+            ov.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:2147483040;width:390px;max-width:calc(100vw - 32px);max-height:82vh;display:flex;flex-direction:column;background:#fff;border:2px solid ' + C.accent + ';border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,0.4);font-family:\'Amazon Ember\',Arial,sans-serif;overflow:hidden;transform-origin:bottom left;animation:onbRise .3s cubic-bezier(.18,.9,.32,1.2);';
             const head = document.createElement('div'); head.style.cssText = 'background:' + C.headerGrad + ';color:#fff;padding:11px 14px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
             const dia = (() => { const h = new Date().getHours(); return h >= 6 && h < 18; })();
             const headLeft = document.createElement('div');
@@ -1531,7 +1639,7 @@
             btnRefresh.style.cssText = 'background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;font-size:13px;';
             btnRefresh.onclick = () => doRefresh(true);
             const btnDet = document.createElement('button'); btnDet.innerHTML = '🔎 Mais detalhes'; btnDet.style.cssText = 'background:' + C.accent + ';color:#232F3E;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:12px;'; btnDet.onclick = () => { ov.remove(); showDashboard(curR); };
-            const x = document.createElement('button'); x.textContent = '✖'; x.style.cssText = 'background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;'; x.onclick = () => ov.remove();
+            const x = document.createElement('button'); x.textContent = '✖'; x.style.cssText = 'background:' + C.red + ';color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;'; x.onclick = () => ov.remove();
             headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
             const tabs = document.createElement('div'); tabs.style.cssText = 'display:flex;flex-shrink:0;border-bottom:1px solid ' + C.border + ';background:#fff;';
             const tabHora = document.createElement('button'); const tabLog = document.createElement('button'); const tabErrado = document.createElement('button');
@@ -1554,7 +1662,7 @@
                 nextAt = Date.now() + OVERLAY_REFRESH_MS;
                 if (btnRefresh) { btnRefresh.disabled = true; btnRefresh.style.opacity = '.5'; }
                 updatedEl.textContent = 'atualizando…';
-                fetchReport((r2, err) => {
+                getReport(true, (r2, err) => {
                     refreshing = false;
                     if (btnRefresh) { btnRefresh.disabled = false; btnRefresh.style.opacity = '1'; }
                     if (!document.body.contains(ov)) return;
@@ -1602,18 +1710,32 @@
         }
         function removeAll() { ['onb-bar', 'onb-overlay', 'onb-dash', 'onb-people', 'onb-webhook'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); }); }
 
-        let enabled = false, mo = null;
-        function enable() {
-            if (enabled) { injectBar(); return; }
-            enabled = true; injectUICss(); injectBar();
-            if (!mo) {
-                let moT = null;
-                mo = new MutationObserver(() => { if (!enabled || moT) return; moT = setTimeout(() => { moT = null; if (enabled) injectBar(); }, 500); });
-                try { mo.observe(document.body, { childList: true }); } catch (e) {}
-            }
-        }
+        let enabled = false;
+        // enable = só prepara (injeta CSS). A ENTRADA agora é o mini-menu radial do círculo
+        // (não injeta mais a barra fixa 'onb-bar').
+        function enable() { if (enabled) return; enabled = true; injectUICss(); }
         function disable() { if (!enabled) return; enabled = false; removeAll(); }
-        return { enable, disable };
+        // Abre o painel de Onboarding/Learning Hours sob demanda (igual ao antigo clique da barra).
+        function openOverlay() {
+            if (!enabled) { enabled = true; injectUICss(); }
+            const ex = document.getElementById('onb-overlay'); if (ex) ex.remove();
+            getReport(false, (r, err) => {   // usa cache recente (abre instantâneo); rebusca só se vazio/velho
+                if (err && !r) { alert('❌ ' + err + '\nNão consegui buscar o relatório de onboarding.'); return; }
+                injectOverlay(r || buildReportFrom([]));
+            });
+        }
+        function isOpen() { return !!(document.getElementById('onb-overlay') || document.getElementById('onb-dash') || document.getElementById('onb-people')); }
+        function closeAll() { removeAll(); }
+        // Busca o relatório e devolve só as contagens de alerta (p/ o anel do círculo).
+        function fetchCounts(cb) {
+            getReport(true, (r, err) => {   // poll: busca fresco e alimenta o cache p/ a abertura ficar instantânea
+                if (err || !r) { if (cb) cb(null, err || 'sem dados'); return; }
+                let errado = 0;
+                try { errado = logadoErrado(r).length; } catch (e) {}
+                if (cb) cb({ errado: errado }, null);
+            });
+        }
+        return { enable, disable, openOverlay, isOpen, closeAll, fetchCounts };
     }
     const onbModule = createOnbModule();
 
@@ -1624,6 +1746,23 @@
         buildUI();
         render();
         setInterval(render, 1000);
+        // Poll dos "logados errados" p/ o anel vermelho. Compartilhado entre abas:
+        // se outra aba já buscou nos últimos 3 min, reusa a contagem (sem refazer o fetch pesado).
+        const ONB_SHARE_MS = 3 * 60 * 1000;
+        function pollErrado() {
+            const c = ensureCycle();
+            const onbAvail = c.selection && (onFclmOnbReport() || /^onb/.test(c.selection || ''));
+            if (!onbAvail || !onbModule) return;
+            let shared = null; try { shared = JSON.parse(store.get('chkatv_onb_errado', 'null')); } catch (e) {}
+            if (shared && (Date.now() - (shared.ts || 0) < ONB_SHARE_MS)) { erradoCount = shared.errado || 0; return; }
+            // marca otimista (evita várias abas buscando ao mesmo tempo)
+            store.set('chkatv_onb_errado', JSON.stringify({ ts: Date.now(), errado: (shared && shared.errado) || 0 }));
+            onbModule.fetchCounts((cts) => {
+                if (cts) { erradoCount = cts.errado || 0; store.set('chkatv_onb_errado', JSON.stringify({ ts: Date.now(), errado: erradoCount })); }
+            });
+        }
+        setTimeout(pollErrado, 4000);
+        setInterval(pollErrado, 60 * 1000);   // checa a cada 1 min (leve); só busca quando o compartilhado vence
         window.addEventListener('resize', () => { if (fab) applyPos(); });
         window.addEventListener('pointerdown', function unlock() {
             try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
@@ -1632,8 +1771,10 @@
         window.addEventListener('keydown', function (e) {
             if (e.key !== 'Escape') return;
             if (helpEl) { toggleHelp(); return; }
+            if (radialEl) { hideRadial(); return; }
             const ids = ['onb-people', 'onb-dash', 'onb-overlay'];
-            for (let i = 0; i < ids.length; i++) { const n = document.getElementById(ids[i]); if (n) { n.remove(); return; } }
+            for (let i = 0; i < ids.length; i++) { const n = document.getElementById(ids[i]); if (n) { n.remove(); render(); return; } }
+            if (menuOpen) { menuOpen = false; render(); return; }
         });
     }
     init();
