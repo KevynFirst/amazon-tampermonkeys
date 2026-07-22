@@ -4,7 +4,7 @@
 
 ### Coleção de *userscripts* de automação e produtividade para o dia a dia do FC GRU5
 
-Ferramentas para **Learning**, **Operations** e **WHS** — instaláveis com **1 clique** via [Tampermonkey](https://www.tampermonkey.net/).
+Instaláveis com **1 clique** via [Tampermonkey](https://www.tampermonkey.net/).
 
 <br/>
 
