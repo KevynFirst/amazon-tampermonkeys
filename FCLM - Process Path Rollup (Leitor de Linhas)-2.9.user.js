@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCLM - Process Path Rollup (Leitor de Linhas)
+// @name         FCLM - Process Path Rollup (DDD)
 // @namespace    http://tampermonkey.net/
-// @version      2.9
+// @version      3.0
 // @description  Lê linhas específicas (Line Items) do processPathRollup e mostra a linha inteira de cada uma num painel.
 // @author       ladislke
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
@@ -121,10 +121,14 @@
         GAP(), GAP(), GAP(),
         { key: 'aVol',    label: 'Actual Volume' },
         { key: 'aHrs',    label: 'Actual Hours' },
-        GAP(), GAP(), GAP(),
+        { key: 'aRate',   label: 'Actual Rate', tpOnly: true },   // preenchido só na linha THROUGHPUT
+        { key: 'pRate',   label: 'Plan Rate',   tpOnly: true },   // preenchido só na linha THROUGHPUT
+        GAP(),
         { key: 'pVar',    label: 'Plan Variance (Hrs)' },
         { key: 'pToPlan', label: '% to Plan' },
     ];
+    // Valor da célula respeitando colunas "tpOnly" (só valem para a linha THROUGHPUT).
+    const cellValue = (it, col) => (col.tpOnly && canon(it.name) !== 'throughput') ? '' : it[col.key];
 
     // string numérica → número (para os gráficos).
     const toNum = (s) => { const n = parseFloat(String(s == null ? '' : s).replace(/[^\d.\-]/g, '')); return isNaN(n) ? 0 : n; };
@@ -508,7 +512,7 @@
                 const bg = i % 2 === 0 ? '#fff' : C.light;
                 html += `<tr style="background:${bg};border-bottom:1px solid ${C.border};">`;
                 ORANGE.forEach((col, ci) => {
-                    const raw = it[col.key];
+                    const raw = cellValue(it, col);
                     const v = String(raw == null ? '' : raw).replace(/,/g, ''); // sem vírgulas
                     const sticky = ci === 0 ? `position:sticky;left:0;background:${bg};` : '';
                     const align = ci === 0 ? 'left' : 'center';
@@ -536,7 +540,7 @@
         btnCopy.style.cssText = `background:${C.btnGrad};color:#fff;border:2px solid ${C.accent};padding:9px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:13px;`;
         btnCopy.onclick = () => {
             const rows = []; // sem cabeçalho
-            r.items.forEach(it => rows.push(ORANGE.map(c => String(it[c.key] == null ? '' : it[c.key]).replace(/,/g, '')).join('\t')));
+            r.items.forEach(it => rows.push(ORANGE.map(c => { const val = cellValue(it, c); return String(val == null ? '' : val).replace(/,/g, ''); }).join('\t')));
             navigator.clipboard.writeText(rows.join('\n')).then(() => {
                 btnCopy.innerHTML = '✅ Copiado!';
                 setTimeout(() => btnCopy.innerHTML = '📋 Copiar (TSV)', 2000);
