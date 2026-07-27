@@ -6,12 +6,13 @@
 // @author       ladislke
 // @match        *://*/*
 // @match        file:///*
-// @run-at       document-idle
+// @run-at       document-idleaz
 // @connect      fclm-portal.amazon.com
-// @connect      hooks.slack.com
+// @connect      hooks.slack.comac
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_xmlhttpRequest
+// @grant        GM_xmlhttpRequesta
+// @grant        GM_setClipboard
 // ==/UserScript==
 //
 // OBJETIVO: ajudar a NÃO esquecer as tarefas de maior impacto do turno.
@@ -52,6 +53,18 @@
     const NOTE_EXE = 'Abra o verificador_treinamento.exe (pasta Documentos). O navegador não executa programas: para abrir com 1 clique, registre o protocolo (arquivo .reg fornecido). Sem o arquivo? Fale com os analistas na mesa de Learning.';
     const PROTO_EXE = 'gru5verificador://open';   // protocolo do Windows p/ abrir o .exe (via .reg)
 
+    // ── EOS (End of Shift) — gerador de e-mail ───────────────────────────
+    const OUTLOOK_URL = 'https://outlook.cloud.microsoft/mail/';
+    const EOS_TO = 'gru5-lrn@amazon.com';   // destinatário do EOS
+    // Subtítulos padrão (editáveis no wizard).
+    const EOS_OBS_SUB_DEFAULT  = 'AÇÕES';
+    const EOS_BARR_SUB_DEFAULT = 'BARREIRAS OPERACIONAIS';
+    // Texto de "o que comunicar" mostrado ACIMA de cada campo no wizard (ajuste livre).
+    // TODO: substituir pelo texto oficial quando você enviar.
+    const EOS_OBS_HELP  = 'O que comunicar: principais ações e entregas do turno (startups, treinamentos, apollos, e-mails/Slack, acompanhamentos etc.).';
+    const EOS_BARR_AREA_HELP = 'O que comunicar: barreiras específicas da sua área (processo, layout, fluxo, pessoas da área) e o impacto.';
+    const EOS_BARR_OPER_HELP = 'O que comunicar: barreiras operacionais gerais (falta de recurso, equipamento, sistemas) e o impacto no turno.';
+
     // ── Listas por fluxo (label, url|note, alerta day/night) ──────────────
     // a = alerta "HH:MM" ou null (sem alerta). dayOnly: só aparece no turno day.
     const CHECKLISTS = {
@@ -68,7 +81,8 @@
             { t: 'Gestão de pontos e TOT dos novos associados', url: U.ppa },
             { t: 'Realizou a Experiência de Onboarding? (Asana)', url: U.asanaExp, day: '17:00', night: '04:00' },
             { t: 'Realizou o Onboarding Feedback do Dia 1? (Asana)', url: U.asanaFb, day: '17:30', night: '04:30' },
-            { t: 'Enviou o checklist e o EOS?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
         onb2: [
             { t: 'Verificou seu e-mail?', url: U.mail },
@@ -82,7 +96,8 @@
             { t: 'Fechou os GCAs abertos dos associados de Onboarding?', url: U.guided, day: '16:00', night: '03:00' },
             { t: 'Realizou sua meta de apollos? (PA:10 · Support:20)', url: U.netlify },
             { t: 'Realizou o Onboarding Feedback do Dia 2? (Asana)', url: U.asanaFb, day: '17:30', night: '04:30' },
-            { t: 'Enviou o checklist e o EOS?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
         onb3: [
             { t: 'Verificou seu e-mail?', url: U.mail },
@@ -95,26 +110,29 @@
             { t: 'Fechou os GCAs abertos dos associados de Onboarding?', url: U.guided, day: '16:00', night: '03:00' },
             { t: 'Realizou sua meta de apollos? (PA:10 · Support:20)', url: U.netlify },
             { t: 'Realizou o Onboarding Feedback do Dia 3? (Asana)', url: U.asanaFb, day: '17:30', night: '04:30' },
-            { t: 'Enviou o checklist e o EOS?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
         pa: [
             { t: 'Verificou seu e-mail?', url: U.mail },
             { t: 'Abriu seu checklist do dia?', url: U.checklist, day: '06:15', night: '18:15' },
             { t: 'Validou/tratou os tickets?', url: U.tickets },
             { t: 'Atualizou o app de acompanhamento LC? (só turno day)', url: U.netlify, day: '08:10', dayOnly: true },
-            { t: 'Alinhou e/ou validou os safety compliance? (ao menos 1x por escala)', url: U.quicksight },
-            { t: 'Verificou a conformidade da planilha de Embaixadores? (ao menos 1x por escala)', url: U.planEmb },
-            { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE },
+            { t: 'Alinhou e/ou validou os safety compliance? (ao menos 1x por escala)', url: U.quicksight, naOk: true },
+            { t: 'Verificou a conformidade da planilha de Embaixadores? (ao menos 1x por escala)', url: U.planEmb, naOk: true },
+            { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE, naOk: true },
             { t: 'Acompanhando os associados LCs? (PA:10 · Support:20)', url: U.netlify },
-            { t: 'Enviar TTs pendentes para o Slack', url: U.tickets, day: '16:30', night: '04:30' },
-            { t: 'Enviou o checklist e o EOS?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar TTs pendentes para o Slack', url: U.tickets, day: '16:30', night: '04:30', naOk: true },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
         support: [
             { t: 'Verificou seu e-mail?', url: U.mail },
             { t: 'Validou/tratou os tickets?', url: U.tickets },
-            { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE },
+            { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE, naOk: true },
             { t: 'Acompanhando os associados LCs? (PA:10 · Support:20)', url: U.netlify, day: '08:30', night: '19:00' },
-            { t: 'Enviou o checklist e o EOS?', url: U.mail, day: '18:00', night: '05:00' },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
     };
     const SEL_LABEL = { onb1: 'Onboarding — Dia 1', onb2: 'Onboarding — Dia 2', onb3: 'Onboarding — Dia 3', pa: 'PA', support: 'Support' };
@@ -190,15 +208,18 @@
         const opd = operationalDate(now);
         let c = getCycle();
         if (!c || c.opDate !== opd) {
-            c = { opDate: opd, shift: shiftFromTime(now), selection: null, done: {} };
+            c = { opDate: opd, shift: shiftFromTime(now), selection: null, done: {}, na: {} };
             setCycle(c);
             warnedIds = {}; beepedIds = {};
         }
+        if (!c.na) c.na = {};
         return c;
     }
-    function setSelection(sel) { const c = ensureCycle(); c.selection = sel; c.done = {}; setCycle(c); warnedIds = {}; beepedIds = {}; }
-    function toggleDone(id) { const c = ensureCycle(); if (c.done[id]) delete c.done[id]; else c.done[id] = true; setCycle(c); }
-    function reAsk() { const c = ensureCycle(); c.selection = null; c.done = {}; setCycle(c); warnedIds = {}; beepedIds = {}; }
+    function setSelection(sel) { const c = ensureCycle(); c.selection = sel; c.done = {}; c.na = {}; setCycle(c); warnedIds = {}; beepedIds = {}; }
+    function toggleDone(id) { const c = ensureCycle(); if (c.done[id]) delete c.done[id]; else { c.done[id] = true; if (c.na) delete c.na[id]; } setCycle(c); }
+    // N/A (não aplicável): satisfaz o item sem contar como "feito"; exclui do "feito" e vice-versa.
+    function toggleNa(id) { const c = ensureCycle(); if (!c.na) c.na = {}; if (c.na[id]) delete c.na[id]; else { c.na[id] = true; if (c.done[id]) delete c.done[id]; } setCycle(c); }
+    function reAsk() { const c = ensureCycle(); c.selection = null; c.done = {}; c.na = {}; setCycle(c); warnedIds = {}; beepedIds = {}; }
     const SNOOZE_MS = 5 * 60 * 1000;   // adiar no máximo 5 minutos
     function snoozeItem(id) { const c = ensureCycle(); if (!c.snooze) c.snooze = {}; c.snooze[id] = nowMs() + SNOOZE_MS; setCycle(c); }
     // Override manual do turno (mantém a detecção automática; só troca quando o usuário clica).
@@ -217,7 +238,7 @@
         if (!c.selection || !CHECKLISTS[c.selection]) {
             return { needSetup: true, shift: c.shift, items: [], total: 0, doneCount: 0, pct: 0, overdue: [], warning: [] };
         }
-        const shift = c.shift, done = c.done || {}, snoozeMap = c.snooze || {}, t = nowMs();
+        const shift = c.shift, done = c.done || {}, naMap = c.na || {}, snoozeMap = c.snooze || {}, t = nowMs();
         let list = CHECKLISTS[c.selection].filter(a => !(a.dayOnly && shift !== 'day'));
         const items = list.map((a, idx) => {
             const id = c.selection + '_' + idx;
@@ -225,14 +246,16 @@
             const ts = alertTs(c.opDate, shift, hhmm);
             const secsLeft = ts ? Math.round((ts - t) / 1000) : null;
             const isDone = !!done[id];
+            const isNa = !!naMap[id];
+            const satisfied = isDone || isNa;   // "feito" OU "N/A" já satisfaz (não alerta e conta no %)
             const snoozeUntil = snoozeMap[id] || 0;
-            const snoozed = !isDone && t < snoozeUntil;
+            const snoozed = !satisfied && t < snoozeUntil;
             return {
-                id, label: a.t, url: a.url || null, note: a.note || null, alert: hhmm || null, ts,
-                done: isDone, secsLeft,
+                id, label: a.t, url: a.url || null, note: a.note || null, eos: !!a.eos, alert: hhmm || null, ts,
+                done: isDone, na: isNa, allowNa: !!a.naOk, satisfied, secsLeft,
                 snoozed, snoozeLeft: snoozed ? Math.round((snoozeUntil - t) / 1000) : 0,
-                overdue: !!ts && !isDone && !snoozed && t >= ts,
-                warning: !!ts && !isDone && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
+                overdue: !!ts && !satisfied && !snoozed && t >= ts,
+                warning: !!ts && !satisfied && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
             };
         });
         // Itens pessoais adicionados pelo usuário (aba "Adicionar") — done por dia como os demais.
@@ -247,14 +270,14 @@
             const snoozed = !isDone && t < snoozeUntil;
             items.push({
                 id: id, label: ci.t, url: ci.url || null, note: null, alert: hhmm, ts: ts,
-                done: isDone, secsLeft: secsLeft,
+                done: isDone, na: false, allowNa: false, satisfied: isDone, secsLeft: secsLeft,
                 snoozed: snoozed, snoozeLeft: snoozed ? Math.round((snoozeUntil - t) / 1000) : 0,
                 overdue: !!ts && !isDone && !snoozed && t >= ts,
                 warning: !!ts && !isDone && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
                 custom: true, customId: ci.id,
             });
         });
-        const total = items.length, doneCount = items.filter(i => i.done).length;
+        const total = items.length, doneCount = items.filter(i => i.satisfied).length;
         const pct = total ? Math.round((doneCount / total) * 100) : 0;
         const overdue = items.filter(i => i.overdue).sort((a, b) => a.ts - b.ts);
         const warning = items.filter(i => i.warning);
@@ -779,24 +802,27 @@
     // ── Linha da tarefa ──────────────────────────────────────────────────
     let hoveredLinkId = null;   // mantém o botão 🔗 preenchido mesmo quando a lista é reconstruída
     function buildRow(i) {
-        const accent = i.done ? '#27AE60' : (i.overdue ? '#CC0000' : (i.warning ? '#E88B00' : '#CBD3DB'));
+        const accent = i.na ? '#5B6B7B' : (i.done ? '#27AE60' : (i.overdue ? '#CC0000' : (i.warning ? '#E88B00' : '#CBD3DB')));
         const row = el('div', 'display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E8E8E8;'
             + 'border-left:4px solid ' + accent + ';border-radius:10px;padding:9px 11px;margin-bottom:8px;'
-            + 'box-shadow:0 2px 6px rgba(35,47,62,.06);cursor:pointer;opacity:' + (i.done ? '.7' : '1') + ';');
+            + 'box-shadow:0 2px 6px rgba(35,47,62,.06);cursor:pointer;opacity:' + (i.satisfied ? '.7' : '1') + ';');
         row.addEventListener('mouseenter', () => row.style.background = '#F7FAFF');
         row.addEventListener('mouseleave', () => row.style.background = '#fff');
         row.addEventListener('click', () => { toggleDone(i.id); render(); });
 
-        const box = el('span', 'width:20px;height:20px;border-radius:6px;border:2px solid ' + (i.done ? '#27AE60' : (i.overdue ? '#CC0000' : '#B9C4CE')) + ';'
-            + 'background:' + (i.done ? '#27AE60' : '#fff') + ';flex:none;display:flex;align-items:center;'
-            + 'justify-content:center;font-size:13px;color:#fff;', i.done ? '✔' : '');
+        const boxBorder = i.na ? '#5B6B7B' : (i.done ? '#27AE60' : (i.overdue ? '#CC0000' : '#B9C4CE'));
+        const boxBg = i.done ? '#27AE60' : (i.na ? '#5B6B7B' : '#fff');
+        const box = el('span', 'width:20px;height:20px;border-radius:6px;border:2px solid ' + boxBorder + ';'
+            + 'background:' + boxBg + ';flex:none;display:flex;align-items:center;'
+            + 'justify-content:center;font-size:13px;color:#fff;', i.done ? '✔' : (i.na ? '–' : ''));
         row.appendChild(box);
 
         const mid = el('div', 'flex:1;min-width:0;');
         mid.appendChild(el('div', 'font-size:13px;font-weight:800;line-height:1.3;'
-            + (i.done ? 'text-decoration:line-through;color:#8090A0;' : 'color:#232F3E;'), i.label));
+            + (i.satisfied ? 'text-decoration:line-through;color:#8090A0;' : 'color:#232F3E;'), i.label));
         let stTxt, stColor;
-        if (i.done) { stTxt = '✔ Concluído'; stColor = '#1E8449'; }
+        if (i.na) { stTxt = '🚫 Não aplicável (N/A)'; stColor = '#5B6B7B'; }
+        else if (i.done) { stTxt = '✔ Concluído'; stColor = '#1E8449'; }
         else if (i.snoozed) { stTxt = '😴 Adiado (' + fmtLeft(i.snoozeLeft) + ')'; stColor = '#7C8B99'; }
         else if (i.overdue) { stTxt = '⛔ Atrasado (alerta ' + i.alert + ')'; stColor = '#CC0000'; }
         else if (i.warning) { stTxt = '⏰ Faça agora — alerta ' + i.alert + ' (faltam ' + fmtLeft(i.secsLeft) + ')'; stColor = '#E88B00'; }
@@ -804,6 +830,17 @@
         else { stTxt = '— sem alerta'; stColor = '#9AA7B4'; }
         mid.appendChild(el('div', 'font-size:10px;font-weight:700;margin-top:2px;color:' + stColor + ';', stTxt));
         row.appendChild(mid);
+
+        // Botão N/A (só para itens marcados com naOk): satisfaz o item sem contar como "feito".
+        if (i.allowNa) {
+            const on = i.na;
+            const nb = el('button', 'flex:none;background:' + (on ? '#5B6B7B' : '#fff') + ';border:1px solid #5B6B7B;color:' + (on ? '#fff' : '#5B6B7B') + ';border-radius:8px;'
+                + 'padding:7px 8px;cursor:pointer;font-size:11px;font-weight:800;' + AMZ, 'N/A');
+            nb.title = on ? 'Desmarcar Não Aplicável' : 'Marcar como Não Aplicável (N/A)';
+            nb.setAttribute('aria-label', 'Marcar item como Não Aplicável');
+            nb.addEventListener('click', (e) => { e.stopPropagation(); toggleNa(i.id); render(); });
+            row.appendChild(nb);
+        }
 
         if (i.url) {
             const on = (hoveredLinkId === i.id);
@@ -820,6 +857,15 @@
             nb.title = 'Abrir verificador_treinamento.exe';
             nb.addEventListener('click', (e) => { e.stopPropagation(); tryLaunchExe(); });
             row.appendChild(nb);
+        } else if (i.eos) {
+            const eb = el('button', 'flex:none;background:#fff;border:1px solid #FF9900;color:#FF9900;border-radius:8px;'
+                + 'padding:7px 9px;cursor:pointer;font-size:14px;font-weight:800;' + AMZ, '✉️');
+            eb.title = 'Montar e enviar o EOS';
+            eb.setAttribute('aria-label', 'Montar o e-mail de End of Shift');
+            eb.addEventListener('mouseenter', () => { eb.style.background = '#FF9900'; });
+            eb.addEventListener('mouseleave', () => { eb.style.background = '#fff'; });
+            eb.addEventListener('click', (e) => { e.stopPropagation(); openEosWizard(); });
+            row.appendChild(eb);
         }
         if (i.custom) {
             const rm = el('button', 'flex:none;background:#fff;border:1px solid #cc0000;color:#cc0000;border-radius:8px;'
@@ -867,6 +913,444 @@
         fadeIn(take, 200); fadeIn(box, 260, 10);
     }
     function hideTakeover() { if (!take || take._closing) return; const t = take; take._closing = true; take = null; fadeOut(t, 160, () => t.remove()); }
+
+    // ── EOS (End of Shift): wizard de coleta + gerador de e-mail ─────────
+    let eosData = null, eosOverlay = null, eosStep = 1, eosImgBlob = null;
+    function isOnbSel(sel) { return sel === 'onb1' || sel === 'onb2' || sel === 'onb3'; }
+    function fmtDateBR(opDate) { const p = (opDate || operationalDate(new Date())).split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
+    // Abre a criação de e-mail (compose) do Outlook já com o destinatário e o assunto.
+    function eosComposeUrl() {
+        const label = (eosData && SEL_LABEL[eosData.selection]) || 'Learning';
+        const subj = 'End of Shift - ' + label + ' - ' + fmtDateBR(eosData ? eosData.opDate : null);
+        return 'https://outlook.cloud.microsoft/mail/deeplink/compose?to=' + encodeURIComponent(EOS_TO) + '&subject=' + encodeURIComponent(subj);
+    }
+
+    function openEosWizard() {
+        const c = ensureCycle();
+        if (!c.selection) { toast('Escolha o fluxo do dia antes de montar o EOS.'); return; }
+        eosData = {
+            selection: c.selection, opDate: c.opDate, login: '',
+            previsto: '', presentes: '', setor: '', apollos: '', tickets: '',
+            obsText: '', barrArea: '', barrOper: '',
+        };
+        eosStep = 1; renderEosStep();
+    }
+    function closeEos() { if (!eosOverlay) return; const o = eosOverlay; eosOverlay = null; fadeOut(o, 140, () => o.remove()); }
+    function ensureEosOverlay() {
+        if (eosOverlay && document.body.contains(eosOverlay)) return;
+        eosOverlay = el('div', 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483620;background:rgba(8,12,18,.9);'
+            + 'display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;' + FF);
+        eosOverlay.id = 'chkatv-eos';
+        document.body.appendChild(eosOverlay);
+        fadeIn(eosOverlay, 160);
+    }
+
+    // Campo de texto/numérico rotulado.
+    function eosField(parent, labelTxt, value, type, placeholder, onInput) {
+        parent.appendChild(el('div', 'font-size:12px;font-weight:800;color:#232F3E;margin:12px 0 5px;', labelTxt));
+        const inp = el('input', 'width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #CBD3DB;border-radius:9px;font-size:14px;color:#232F3E;background:#fff;' + AMZ);
+        inp.type = type || 'text';
+        if (placeholder) inp.placeholder = placeholder;
+        inp.value = value || '';
+        inp.addEventListener('keydown', (e) => e.stopPropagation());
+        inp.addEventListener('input', () => onInput(inp.value));
+        parent.appendChild(inp);
+        return inp;
+    }
+    function eosTextarea(parent, value, placeholder, onInput) {
+        const ta = el('textarea', 'width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #CBD3DB;border-radius:9px;'
+            + 'font-size:13.5px;color:#232F3E;background:#fff;min-height:96px;resize:vertical;line-height:1.5;' + AMZ);
+        ta.placeholder = placeholder || '';
+        ta.value = value || '';
+        ta.addEventListener('keydown', (e) => e.stopPropagation());
+        ta.addEventListener('input', () => onInput(ta.value));
+        parent.appendChild(ta);
+        return ta;
+    }
+    // Barra de navegação (Voltar / Avançar).
+    function eosNav(parent, opts) {
+        const barEl = el('div', 'display:flex;gap:10px;margin-top:20px;');
+        if (opts.back) {
+            const b = el('button', 'flex:0 0 auto;background:#EAEDF0;border:1px solid #CBD3DB;color:#232F3E;border-radius:10px;'
+                + 'padding:11px 16px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '← Voltar');
+            b.addEventListener('click', opts.onBack);
+            barEl.appendChild(b);
+        }
+        const n = el('button', 'flex:1;background:#FF9900;border:none;color:#131921;border-radius:10px;padding:11px 16px;'
+            + 'font-weight:800;cursor:pointer;font-size:14px;' + AMZ, opts.nextLabel);
+        n.addEventListener('click', opts.onNext);
+        barEl.appendChild(n);
+        parent.appendChild(barEl);
+    }
+
+    function renderEosStep() {
+        ensureEosOverlay();
+        eosOverlay.textContent = '';
+        const card = el('div', 'width:min(480px,96vw);max-height:92vh;overflow:auto;background:#fff;border-radius:16px;'
+            + 'box-shadow:0 24px 70px rgba(0,0,0,.6);' + AMZ);
+        const hd = el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);padding:16px 18px;color:#fff;position:sticky;top:0;');
+        const hdTop = el('div', 'display:flex;align-items:center;gap:8px;');
+        hdTop.appendChild(el('span', 'font-size:18px;', '✉️'));
+        hdTop.appendChild(el('span', 'font-size:15px;font-weight:800;flex:1;', 'End of Shift'));
+        const x = el('button', 'width:26px;height:26px;border-radius:8px;border:none;background:#cc0000;color:#fff;font-weight:800;cursor:pointer;line-height:1;padding:0;', '✕');
+        x.addEventListener('click', closeEos);
+        hdTop.appendChild(x);
+        hd.appendChild(hdTop);
+        hd.appendChild(el('div', 'font-size:11.5px;color:#CBD8E6;margin-top:5px;', (SEL_LABEL[eosData.selection] || '') + ' · Passo ' + eosStep + ' de 3'));
+        card.appendChild(hd);
+
+        const body = el('div', 'padding:18px;');
+        if (eosStep === 1) buildEosStep1(body);
+        else if (eosStep === 2) buildEosStep2(body);
+        else buildEosStep3(body);
+        card.appendChild(body);
+
+        eosOverlay.appendChild(card);
+        fadeIn(card, 200, 10);
+    }
+
+    function buildEosStep1(body) {
+        body.appendChild(el('p', 'font-size:13px;color:#5B6B7B;margin:0 0 4px;line-height:1.5;', 'Informe o login do associado. Ele vai no rodapé (assinatura) do e-mail.'));
+        const inp = eosField(body, 'Login do associado', eosData.login, 'text', 'ex.: junifrau', (v) => { eosData.login = v.trim(); });
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goNext(); } });
+        setTimeout(() => { try { inp.focus(); } catch (e) {} }, 60);
+        eosNav(body, { back: false, nextLabel: 'Avançar →', onNext: goNext });
+        function goNext() { if (!eosData.login) { inp.style.borderColor = '#cc0000'; inp.focus(); return; } eosStep = 2; renderEosStep(); }
+    }
+
+    function buildEosStep2(body) {
+        const onb = isOnbSel(eosData.selection);
+        body.appendChild(el('p', 'font-size:13px;color:#5B6B7B;margin:0 0 4px;line-height:1.5;', onb ? 'Dados do Onboarding.' : 'Dados do turno.'));
+        const numRefs = [];
+        const numField = (label, key) => {
+            const inp = eosField(body, label, eosData[key], 'number', '0', (v) => { eosData[key] = v; });
+            inp.setAttribute('inputmode', 'numeric');
+            inp.min = '0';
+            inp.addEventListener('input', () => { inp.style.borderColor = '#CBD3DB'; err.style.display = 'none'; });
+            numRefs.push({ inp, key, label });
+        };
+        if (onb) {
+            numField('Previsto', 'previsto');
+            numField('Presentes', 'presentes');
+            eosField(body, 'Setor', eosData.setor, 'text', 'ex.: Pack / Pick / Docas', (v) => { eosData.setor = v; });
+        } else {
+            numField('Qtd Apollos', 'apollos');
+            numField('Qtd Tickets resolvidos', 'tickets');
+        }
+        const err = el('div', 'display:none;color:#cc0000;font-size:12px;font-weight:700;margin-top:12px;line-height:1.4;', '');
+        body.appendChild(err);
+        eosNav(body, {
+            back: true, nextLabel: 'Avançar →',
+            onBack: () => { eosStep = 1; renderEosStep(); },
+            onNext: () => {
+                for (const r of numRefs) {
+                    const val = String(eosData[r.key] == null ? '' : eosData[r.key]).trim();
+                    if (!/^\d+$/.test(val)) {
+                        r.inp.style.borderColor = '#cc0000';
+                        err.textContent = '⚠ "' + r.label + '": digite apenas números inteiros (sem letras).';
+                        err.style.display = 'block';
+                        try { r.inp.focus(); } catch (e) {}
+                        return;
+                    }
+                }
+                eosStep = 3; renderEosStep();
+            },
+        });
+    }
+
+    function buildEosStep3(body) {
+        const labelCss = 'font-size:13px;font-weight:800;color:#232F3E;margin:2px 0 4px;';
+        const helpCss = 'font-size:11px;color:#7C8B99;margin:0 0 6px;line-height:1.4;font-style:italic;';
+        body.appendChild(el('div', labelCss, 'Observações'));
+        body.appendChild(el('div', helpCss, EOS_OBS_HELP));
+        const obs = eosTextarea(body, eosData.obsText, 'Digite as observações…', (v) => { eosData.obsText = v; });
+        body.appendChild(el('div', labelCss.replace('2px', '16px'), 'Barreira da Área'));
+        body.appendChild(el('div', helpCss, EOS_BARR_AREA_HELP));
+        eosTextarea(body, eosData.barrArea, 'Digite as barreiras da área…', (v) => { eosData.barrArea = v; });
+        body.appendChild(el('div', labelCss.replace('2px', '16px'), 'Barreira Operacional'));
+        body.appendChild(el('div', helpCss, EOS_BARR_OPER_HELP));
+        eosTextarea(body, eosData.barrOper, 'Digite as barreiras operacionais…', (v) => { eosData.barrOper = v; });
+        eosNav(body, { back: true, nextLabel: '✉️ Gerar EOS', onBack: () => { eosStep = 2; renderEosStep(); }, onNext: () => generateEos() });
+        setTimeout(() => { try { obs.focus(); } catch (e) {} }, 60);
+    }
+
+    // Cria <td>/<table> já com atributos clássicos de e-mail (bgcolor/align/width),
+    // porque o Outlook remove background/estilos de <div>. Tabela + bgcolor sobrevive à colagem.
+    function eosTag(tag, cssText, attrs, text) {
+        const e = el(tag, cssText, text);
+        if (attrs) Object.keys(attrs).forEach(k => e.setAttribute(k, attrs[k]));
+        return e;
+    }
+    // Texto colorido. O Outlook costuma remover a cor de <div>/<td> e apagar a tag <font>,
+    // mas mantém cor inline em <span>. Uso span (cor) + font (fallback) para máxima compatibilidade.
+    function eosFont(color, text, bold) {
+        const s = document.createElement('span');
+        // !important inline vence CSS da página (mesmo com !important) e evita cor preta herdada.
+        s.style.setProperty('color', color, 'important');
+        if (bold) s.style.setProperty('font-weight', '700', 'important');
+        const f = document.createElement('font');
+        f.setAttribute('color', color);
+        f.style.setProperty('color', color, 'important');
+        f.appendChild(document.createTextNode(text));
+        s.appendChild(f);
+        return s;
+    }
+    // Linha full-width (barra de seção) com cor de fundo via bgcolor + texto via <font>.
+    function eosBarRow(tbody, text, bg, color) {
+        const tr = el('tr', '');
+        const td = eosTag('td', 'padding:9px 14px;text-align:center;font-size:13px;letter-spacing:.5px;'
+            + 'background-color:' + (bg || '#8A97A4') + ';', { bgcolor: bg || '#8A97A4', align: 'center' });
+        td.appendChild(eosFont(color || '#ffffff', text, true));
+        tr.appendChild(td); tbody.appendChild(tr);
+    }
+    // Subtítulo (barra cinza mais clara, alinhado à esquerda).
+    function eosSubRow(tbody, text) {
+        const tr = el('tr', '');
+        const td = eosTag('td', 'padding:7px 14px;text-align:left;font-size:11.5px;letter-spacing:.4px;background-color:#9AA7B4;',
+            { bgcolor: '#9AA7B4', align: 'left' });
+        td.appendChild(eosFont('#ffffff', text, true));
+        tr.appendChild(td); tbody.appendChild(tr);
+    }
+    // Linha de texto livre (converte \n em <br> para preservar quebras no Outlook).
+    function eosTextRow(tbody, text) {
+        const tr = el('tr', '');
+        const td = el('td', 'padding:12px 16px;font-size:12.5px;color:#232F3E;line-height:1.6;');
+        String(text || '').split('\n').forEach((line, i) => {
+            if (i > 0) td.appendChild(document.createElement('br'));
+            td.appendChild(document.createTextNode(line));
+        });
+        tr.appendChild(td); tbody.appendChild(tr);
+    }
+    function eosInnerTable() {
+        const t = eosTag('table', 'width:100%;border-collapse:collapse;', { width: '100%', cellpadding: '0', cellspacing: '0', border: '0' });
+        const tb = el('tbody', ''); t.appendChild(tb);
+        return { table: t, body: tb };
+    }
+
+    // Monta o corpo do e-mail como TABELA (bgcolor) → cola no Outlook com cores e estrutura.
+    function buildEosEmailNode() {
+        const onb = isOnbSel(eosData.selection);
+        const st = computeState();
+        const checked = st.items.filter(i => i.done && !i.eos).map(i => i.label);
+
+        const box = eosTag('table', 'border-collapse:collapse;width:620px;max-width:100%;background-color:#ffffff;'
+            + 'border:1px solid #C9CFD6;font-family:Arial,\'Segoe UI\',sans-serif;color:#232F3E;', { width: '620', cellpadding: '0', cellspacing: '0', border: '0', bgcolor: '#ffffff' });
+        const tbody = el('tbody', ''); box.appendChild(tbody);
+
+        // Cabeçalho (fundo escuro)
+        const hdTr = el('tr', '');
+        const hdTd = eosTag('td', 'padding:22px 16px;text-align:center;background-color:#232F3E;', { bgcolor: '#232F3E', align: 'center' });
+        const hTitle = el('div', 'font-size:22px;letter-spacing:1px;'); hTitle.appendChild(eosFont('#FF9900', 'END OF SHIFT', true));
+        const hDate = el('div', 'font-size:12px;padding-top:4px;'); hDate.appendChild(eosFont('#FF9900', fmtDateBR(eosData.opDate)));
+        hdTd.appendChild(hTitle); hdTd.appendChild(hDate);
+        hdTr.appendChild(hdTd); tbody.appendChild(hdTr);
+
+        // ROTINA
+        eosBarRow(tbody, 'ROTINA');
+        const rot = eosInnerTable();
+        const hr = el('tr', '');
+        const hAtv = eosTag('td', 'padding:8px 14px;font-size:12px;text-align:left;border:1px solid #DADDE1;', { align: 'left' }); hAtv.appendChild(eosFont('#FF9900', 'ATIVIDADE', true));
+        const hSt = eosTag('td', 'padding:8px 14px;font-size:12px;text-align:center;border:1px solid #DADDE1;', { align: 'center' }); hSt.appendChild(eosFont('#FF9900', 'STATUS', true));
+        hr.appendChild(hAtv); hr.appendChild(hSt);
+        rot.body.appendChild(hr);
+        if (!checked.length) {
+            const tr = el('tr', '');
+            tr.appendChild(eosTag('td', 'padding:10px 14px;font-size:12px;color:#8A97A4;text-align:center;', { colspan: '2', align: 'center' }, 'Nenhum item marcado no checklist.'));
+            rot.body.appendChild(tr);
+        } else {
+            checked.forEach((label) => {
+                const tr = el('tr', '');
+                const cLbl = el('td', 'padding:8px 14px;font-size:12.5px;border:1px solid #DADDE1;'); cLbl.appendChild(eosFont('#232F3E', label));
+                const cChk = eosTag('td', 'padding:8px 14px;text-align:center;border:1px solid #DADDE1;font-size:14px;', { align: 'center' }); cChk.appendChild(eosFont('#2E8B57', '✔\uFE0E', true));
+                tr.appendChild(cLbl); tr.appendChild(cChk);
+                rot.body.appendChild(tr);
+            });
+        }
+        const rotTr = el('tr', ''); const rotTd = el('td', 'padding:0;'); rotTd.appendChild(rot.table); rotTr.appendChild(rotTd); tbody.appendChild(rotTr);
+
+        // ONBOARDING / TURNO
+        eosBarRow(tbody, onb ? 'ONBOARDING' : 'TURNO');
+        const cols = onb
+            ? [['PREVISTO', eosData.previsto], ['PRESENTES', eosData.presentes], ['SETOR', eosData.setor]]
+            : [['QTD APOLLOS', eosData.apollos], ['QTD TICKETS', eosData.tickets]];
+        const cnt = eosInnerTable();
+        const cr = el('tr', '');
+        const colW = Math.round(100 / cols.length) + '%';
+        cols.forEach((c) => {
+            const td = eosTag('td', 'padding:12px 8px;text-align:center;border:1px solid #DADDE1;vertical-align:middle;', { align: 'center', valign: 'middle', width: colW });
+            const lab = el('div', 'font-size:12px;'); lab.appendChild(eosFont('#FF9900', c[0], true));
+            const val = el('div', 'font-size:15px;padding-top:4px;'); val.appendChild(eosFont('#232F3E', (c[1] === '' || c[1] == null) ? '—' : String(c[1]), true));
+            td.appendChild(lab); td.appendChild(val);
+            cr.appendChild(td);
+        });
+        cnt.body.appendChild(cr);
+        const cntTr = el('tr', ''); const cntTd = el('td', 'padding:0;'); cntTd.appendChild(cnt.table); cntTr.appendChild(cntTd); tbody.appendChild(cntTr);
+
+        // OBSERVAÇÕES (barra laranja) + texto
+        eosBarRow(tbody, 'OBSERVAÇÕES', '#FF9900', '#ffffff');
+        eosTextRow(tbody, eosData.obsText || '');
+
+        // BARREIRAS (barra cinza) + 2 subtítulos (Área / Operacional) + textos
+        eosBarRow(tbody, 'BARREIRAS');
+        eosSubRow(tbody, 'BARREIRA DA ÁREA');
+        eosTextRow(tbody, eosData.barrArea || '');
+        eosSubRow(tbody, 'BARREIRA OPERACIONAL');
+        eosTextRow(tbody, eosData.barrOper || '');
+
+        // Rodapé (assinatura)
+        const ftTr = el('tr', ''); const ftTd = el('td', 'padding:16px;font-size:12.5px;color:#232F3E;line-height:1.6;border-top:1px solid #E3E7EC;border-bottom:1px solid #C9CFD6;');
+        ftTd.appendChild(el('div', '', 'Atenciosamente,'));
+        ftTd.appendChild(el('div', 'height:8px;line-height:8px;font-size:1px;', '\u00A0'));
+        const nameLine = el('div', '');
+        nameLine.appendChild(eosFont('#232F3E', eosData.login, true));
+        nameLine.appendChild(eosFont('#232F3E', ' | Learning - GRU5'));
+        ftTd.appendChild(nameLine);
+        const mailLine = el('div', ''); mailLine.appendChild(eosFont('#FF9900', eosData.login + '@amazon.com'));
+        ftTd.appendChild(mailLine);
+        const wLine = el('div', 'font-style:italic;margin-top:4px;'); wLine.appendChild(eosFont('#7C8B99', 'Work hard, Have fun, Make history.'));
+        ftTd.appendChild(wLine);
+        ftTr.appendChild(ftTd); tbody.appendChild(ftTr);
+
+        return box;
+    }
+
+    function generateEos() {
+        if (!eosData.login) { eosStep = 1; renderEosStep(); return; }
+        showEosPreview(buildEosEmailNode());
+    }
+
+    // Copia o e-mail COM formatação e abre o Outlook.
+    // Prioridade: copiar o HTML EXATO que escrevemos (com cores inline) — não a seleção, que o
+    // navegador pode "normalizar" e injetar cor preta. GM_setClipboard(html) é síncrono e não
+    // depende de foco; depois Clipboard API; por fim seleção + execCommand.
+    function copyEmailAndOpen(node, btn) {
+        const html = '<meta charset="utf-8">' + node.outerHTML;
+        const plain = node.innerText || node.textContent || '';
+        let ok = false;
+        // 1) GM_setClipboard como HTML (Tampermonkey)
+        if (typeof GM_setClipboard === 'function') {
+            try { GM_setClipboard(html, { type: 'html', mimetype: 'text/html' }); ok = true; } catch (e) {}
+        }
+        // 2) Clipboard API com HTML explícito
+        if (!ok && navigator.clipboard && window.ClipboardItem) {
+            try {
+                navigator.clipboard.write([new ClipboardItem({
+                    'text/html': new Blob([html], { type: 'text/html' }),
+                    'text/plain': new Blob([plain], { type: 'text/plain' }),
+                })]);
+                ok = true;
+            } catch (e) {}
+        }
+        // 3) Seleção + execCommand
+        if (!ok) {
+            try {
+                const range = document.createRange();
+                range.selectNode(node);
+                const sel = window.getSelection();
+                sel.removeAllRanges(); sel.addRange(range);
+                ok = document.execCommand('copy');
+                sel.removeAllRanges();
+            } catch (e) {}
+        }
+        if (btn) { const t0 = btn.textContent; btn.textContent = ok ? '✓ Copiado! Abrindo Outlook…' : '⚠ Não copiou'; setTimeout(() => { btn.textContent = t0; }, 1800); }
+        openUrl(eosComposeUrl());   // abre a criação de e-mail (To preenchido) após copiar
+    }
+
+    // Rasteriza um nó DOM para PNG (SVG foreignObject → canvas). Preserva TODAS as cores,
+    // porque vira imagem — imune ao sanitizador do Outlook. cb(blob|null).
+    function eosNodeToPng(node, cb) {
+        const holder = el('div', 'position:fixed;left:-99999px;top:0;width:620px;background:#ffffff;');
+        holder.appendChild(node);
+        document.body.appendChild(holder);
+        const w = Math.max(node.offsetWidth || 0, 620) || 620;
+        const h = node.offsetHeight || 600;
+        let xml = '';
+        try { xml = new XMLSerializer().serializeToString(node); } catch (e) { xml = ''; }
+        try { document.body.removeChild(holder); } catch (e) {}
+        if (!xml) { cb(null); return; }
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
+            + '<foreignObject x="0" y="0" width="' + w + '" height="' + h + '">'
+            + '<div xmlns="http://www.w3.org/1999/xhtml" style="width:' + w + 'px;">' + xml + '</div>'
+            + '</foreignObject></svg>';
+        const img = new Image();
+        const scale = 2;
+        img.onload = function () {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = w * scale; canvas.height = h * scale;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.setTransform(scale, 0, 0, scale, 0, 0);
+                ctx.drawImage(img, 0, 0);
+                canvas.toBlob(function (b) { cb(b); }, 'image/png');
+            } catch (e) { cb(null); }
+        };
+        img.onerror = function () { cb(null); };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    }
+    function eosDownload(blob, name) {
+        try {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob); a.download = name || 'EOS.png';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 3000);
+        } catch (e) {}
+    }
+    // Copia a IMAGEM do EOS e abre o Outlook. (Blob já pré-gerado ao abrir o preview.)
+    function eosCopyImageAndOpen(btn) {
+        let ok = false;
+        if (eosImgBlob && navigator.clipboard && window.ClipboardItem) {
+            try { navigator.clipboard.write([new ClipboardItem({ 'image/png': eosImgBlob })]); ok = true; } catch (e) { ok = false; }
+        }
+        if (!ok && eosImgBlob) eosDownload(eosImgBlob, 'EOS.png');
+        if (btn) {
+            const t0 = btn.textContent;
+            btn.textContent = ok ? '✓ Imagem copiada!' : (eosImgBlob ? '⬇ Baixada — arraste ao e-mail' : '⏳ Gerando imagem…');
+            setTimeout(() => { btn.textContent = t0; }, 2200);
+        }
+        openUrl(eosComposeUrl());
+    }
+
+    function showEosPreview(emailNode) {
+        ensureEosOverlay();
+        eosOverlay.textContent = '';
+        eosImgBlob = null;
+        // Pré-gera a imagem (assíncrono) para que o clique em "Copiar imagem" seja imediato.
+        eosNodeToPng(emailNode.cloneNode(true), (b) => { eosImgBlob = b; });
+
+        const card = el('div', 'width:min(700px,96vw);max-height:92vh;overflow:auto;background:#fff;border-radius:16px;'
+            + 'box-shadow:0 24px 70px rgba(0,0,0,.6);' + AMZ);
+        const hd = el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);padding:14px 18px;color:#fff;'
+            + 'display:flex;align-items:center;gap:8px;position:sticky;top:0;flex-wrap:wrap;');
+        hd.appendChild(el('span', 'font-size:15px;font-weight:800;flex:1 1 100%;margin-bottom:4px;', 'EOS pronto'));
+        const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '�️ Copiar imagem');
+        imgBtn.title = 'Copia como imagem (mantém as cores) e abre o Outlook';
+        hd.appendChild(imgBtn);
+        const htmlBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '📋 HTML');
+        htmlBtn.title = 'Copia como texto/HTML (o Outlook pode remover as cores)';
+        hd.appendChild(htmlBtn);
+        const backBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '← Editar');
+        backBtn.addEventListener('click', () => { eosStep = 3; renderEosStep(); });
+        hd.appendChild(backBtn);
+        const x = el('button', 'width:26px;height:26px;border-radius:8px;border:none;background:#cc0000;color:#fff;font-weight:800;cursor:pointer;line-height:1;padding:0;', '✕');
+        x.addEventListener('click', closeEos);
+        hd.appendChild(x);
+        card.appendChild(hd);
+
+        card.appendChild(el('div', 'padding:8px 16px;font-size:11.5px;color:#5B6B7B;background:#FFF7E6;border-bottom:1px solid #F0E2C0;line-height:1.5;',
+            'Recomendado: “🖼️ Copiar imagem” (mantém as cores). O Outlook abre em outra aba — crie um novo e-mail e cole (Ctrl+V). Se preferir texto editável, use “📋 HTML”.'));
+
+        const wrap = el('div', 'padding:16px;background:#EEF1F4;');
+        const holder = el('div', 'margin:0 auto;box-shadow:0 2px 10px rgba(0,0,0,.1);width:620px;max-width:100%;');
+        holder.appendChild(emailNode);
+        wrap.appendChild(holder);
+        card.appendChild(wrap);
+
+        eosOverlay.appendChild(card);
+        fadeIn(card, 200, 10);
+        imgBtn.addEventListener('click', () => eosCopyImageAndOpen(imgBtn));
+        htmlBtn.addEventListener('click', () => copyEmailAndOpen(emailNode, htmlBtn));
+    }
 
     // ── Menu visível (fade só na mudança) ────────────────────────────────
     function setMenuVisible(v) {
@@ -996,7 +1480,7 @@
                 // Aba "✓ Tarefas": lista de tarefas com filtro de busca.
                 const visible = listFilter ? s.items.filter(i => i.label.toLowerCase().includes(listFilter)) : s.items;
                 // Só reconstrói a lista quando o estado visível muda (evita churn de DOM a cada tick).
-                const sig = 'tasks|f=' + listFilter + '|' + visible.map(i => i.id + (i.done ? 'D' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
+                const sig = 'tasks|f=' + listFilter + '|' + visible.map(i => i.id + (i.done ? 'D' : '') + (i.na ? 'N' : '') + (i.snoozed ? 'z' + i.snoozeLeft : '')
                     + (i.overdue ? 'o' : i.warning ? 'w' : i.alert ? 'a' + i.secsLeft : '')).join('|');
                 if (sig !== lastListSig || listEl.childElementCount === 0) {
                     lastListSig = sig;
@@ -1014,7 +1498,7 @@
         if (menuOpen) positionMenu();
 
         if (mode === 'alert') {
-            s.items.forEach(i => { if (!i.done && i.ts && i.secsLeft > 0 && i.secsLeft <= SOUND_LEAD_SEC && !beepedIds[i.id]) { beepedIds[i.id] = true; beep(); } });
+            s.items.forEach(i => { if (!i.satisfied && i.ts && i.secsLeft > 0 && i.secsLeft <= SOUND_LEAD_SEC && !beepedIds[i.id]) { beepedIds[i.id] = true; beep(); } });
         }
         if (mode === 'alert' && s.overdue.length) showTakeover(s.overdue[0]); else hideTakeover();
 
