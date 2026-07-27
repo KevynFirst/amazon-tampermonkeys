@@ -6,12 +6,12 @@
 // @author       ladislke
 // @match        *://*/*
 // @match        file:///*
-// @run-at       document-idleaz
+// @run-at       document-idle
 // @connect      fclm-portal.amazon.com
-// @connect      hooks.slack.comac
+// @connect      hooks.slack.com
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_xmlhttpRequesta
+// @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // ==/UserScript==
 //
@@ -1323,12 +1323,9 @@
         const hd = el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);padding:14px 18px;color:#fff;'
             + 'display:flex;align-items:center;gap:8px;position:sticky;top:0;flex-wrap:wrap;');
         hd.appendChild(el('span', 'font-size:15px;font-weight:800;flex:1 1 100%;margin-bottom:4px;', 'EOS pronto'));
-        const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '�️ Copiar imagem');
+        const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '🖼️ Copiar imagem');
         imgBtn.title = 'Copia como imagem (mantém as cores) e abre o Outlook';
         hd.appendChild(imgBtn);
-        const htmlBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '📋 HTML');
-        htmlBtn.title = 'Copia como texto/HTML (o Outlook pode remover as cores)';
-        hd.appendChild(htmlBtn);
         const backBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '← Editar');
         backBtn.addEventListener('click', () => { eosStep = 3; renderEosStep(); });
         hd.appendChild(backBtn);
@@ -1338,7 +1335,7 @@
         card.appendChild(hd);
 
         card.appendChild(el('div', 'padding:8px 16px;font-size:11.5px;color:#5B6B7B;background:#FFF7E6;border-bottom:1px solid #F0E2C0;line-height:1.5;',
-            'Recomendado: “🖼️ Copiar imagem” (mantém as cores). O Outlook abre em outra aba — crie um novo e-mail e cole (Ctrl+V). Se preferir texto editável, use “📋 HTML”.'));
+            'Clique em “🖼️ Copiar imagem” (mantém as cores). O Outlook abre em outra aba — crie um novo e-mail e cole (Ctrl+V).'));
 
         const wrap = el('div', 'padding:16px;background:#EEF1F4;');
         const holder = el('div', 'margin:0 auto;box-shadow:0 2px 10px rgba(0,0,0,.1);width:620px;max-width:100%;');
@@ -1349,7 +1346,6 @@
         eosOverlay.appendChild(card);
         fadeIn(card, 200, 10);
         imgBtn.addEventListener('click', () => eosCopyImageAndOpen(imgBtn));
-        htmlBtn.addEventListener('click', () => copyEmailAndOpen(emailNode, htmlBtn));
     }
 
     // ── Menu visível (fade só na mudança) ────────────────────────────────
