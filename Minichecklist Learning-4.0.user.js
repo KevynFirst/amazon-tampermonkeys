@@ -131,7 +131,6 @@
             { t: 'Validou/tratou os tickets?', url: U.tickets },
             { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE, naOk: true },
             { t: 'Acompanhando os associados LCs? (PA:10 · Support:20)', url: U.netlify, day: '08:30', night: '19:00' },
-            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
             { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
     };
