@@ -1,17 +1,17 @@
 // ==UserScript==
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      7.0
 // @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. No fluxo Onboarding a janela é automática pelo turno; na página fixa do functionRollup há filtro de janela selecionável (Dia/Noite/06→05/Dia todo + data). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
-// @author       ladislke
+// @author       ladislkes
 // @match        *://*/*
 // @match        file:///*
-// @run-at       document-idle
+// @run-at       document-idleaz
 // @connect      fclm-portal.amazon.com
-// @connect      hooks.slack.com
+// @connect      hooks.slack.comac
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_xmlhttpRequest
+// @grant        GM_xmlhttpRequesta
 // @grant        GM_setClipboard
 // ==/UserScript==
 //
@@ -131,6 +131,7 @@
             { t: 'Validou/tratou os tickets?', url: U.tickets },
             { t: 'Acompanhou algum treinamento? Se sim, verificou os registros no ATA?', note: NOTE_EXE, naOk: true },
             { t: 'Acompanhando os associados LCs? (PA:10 · Support:20)', url: U.netlify, day: '08:30', night: '19:00' },
+            { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
             { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
     };
@@ -156,12 +157,43 @@
     const K_POS   = 'chkatv_pos';
     const K_MODE  = 'chkatv_mode';
     const K_CUSTOM = 'chkatv_custom'; // [{ id, t }] — itens pessoais adicionados pelo usuário
+    const K_OVERRIDES = 'chkatv_overrides'; // { hidden:{id:true}, labels:{id:'novo texto'} } — edições nas atividades fixas
 
-    // ── Itens pessoais (aba "Adicionar") ─────────────────────────────────
+    // ── Itens pessoais (aba "Editar") ────────────────────────────────────
     function getCustom() { try { const v = JSON.parse(store.get(K_CUSTOM, '[]')); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
     function setCustom(a) { store.set(K_CUSTOM, JSON.stringify(a)); }
-    function addCustomItem(t, alert, url) { const a = getCustom(); a.push({ id: 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1000), t: t, alert: alert || null, url: url || null }); setCustom(a); }
+    function addCustomItem(t, alert, url, repeat, days) { const a = getCustom(); const id = 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1000); a.push({ id: id, t: t, alert: alert || null, url: url || null, repeat: repeat || 'daily', days: Array.isArray(days) ? days : [] }); setCustom(a); return id; }
     function removeCustomItem(id) { setCustom(getCustom().filter(x => x.id !== id)); }
+    function updateCustomItem(id, patch) { const a = getCustom(); const it = a.find(x => x.id === id); if (it) { Object.assign(it, patch); setCustom(a); } }
+    function reorderCustom(srcCid, targetCid) { const a = getCustom(); const from = a.findIndex(x => x.id === srcCid); if (from < 0) return; const it = a.splice(from, 1)[0]; let to = a.findIndex(x => x.id === targetCid); if (to < 0) to = a.length; a.splice(to, 0, it); setCustom(a); }
+    // Item pessoal vale hoje? once = sempre (até concluir); weekly = só nos dias marcados; daily = sempre.
+    function customAppliesToday(ci) { if (ci.repeat === 'once') return true; if (ci.repeat === 'weekly' && Array.isArray(ci.days) && ci.days.length) return ci.days.indexOf(new Date().getDay()) >= 0; return true; }
+    // Ao virar o dia operacional: remove itens pessoais ÚNICOS já concluídos.
+    function purgeDoneOnceCustom(doneMap) { const a = getCustom(); const keep = a.filter(ci => !(ci.repeat === 'once' && doneMap && doneMap['cust_' + ci.id])); if (keep.length !== a.length) setCustom(keep); }
+    let dragId = null;
+
+    // ── Edições das atividades fixas (renomear / ocultar) — persistem entre dias ──
+    function getOverrides() { try { const v = JSON.parse(store.get(K_OVERRIDES, 'null')); return (v && typeof v === 'object') ? { hidden: v.hidden || {}, labels: v.labels || {}, urls: v.urls || {}, alerts: v.alerts || {}, order: v.order || {}, repeat: v.repeat || {}, rdays: v.rdays || {} } : { hidden: {}, labels: {}, urls: {}, alerts: {}, order: {}, repeat: {}, rdays: {} }; } catch (e) { return { hidden: {}, labels: {}, urls: {}, alerts: {}, order: {}, repeat: {}, rdays: {} }; } }
+    function setOverrides(o) { store.set(K_OVERRIDES, JSON.stringify(o)); }
+    function hideItem(id) { const o = getOverrides(); o.hidden[id] = true; setOverrides(o); }
+    function setItemLabel(id, label) { const o = getOverrides(); if (!label) delete o.labels[id]; else o.labels[id] = label; setOverrides(o); }
+    function setItemUrl(id, url) { const o = getOverrides(); o.urls[id] = url || ''; setOverrides(o); }         // '' = sem link (override)
+    function setItemAlert(id, hhmm) { const o = getOverrides(); o.alerts[id] = hhmm || ''; setOverrides(o); }   // '' = sem alerta (override)
+    function setItemRepeat(id, repeat, days) { const o = getOverrides(); o.repeat[id] = repeat || 'daily'; o.rdays[id] = Array.isArray(days) ? days : []; setOverrides(o); }
+    // Atividade fixa vale hoje? (override de repetição). once/daily = sempre; weekly = só nos dias.
+    function fixedAppliesToday(id) { const o = getOverrides(); const r = o.repeat[id] || 'daily'; if (r === 'weekly') { const d = o.rdays[id] || []; return !d.length || d.indexOf(new Date().getDay()) >= 0; } return true; }
+    // Ao virar o dia: atividades fixas ÚNICAS já concluídas são ocultadas.
+    function purgeDoneOnceFixed(doneMap) { const o = getOverrides(); Object.keys(o.repeat || {}).forEach(id => { if (o.repeat[id] === 'once' && doneMap && doneMap[id]) hideItem(id); }); }
+    function resetOverrides() { store.set(K_OVERRIDES, JSON.stringify({ hidden: {}, labels: {}, urls: {}, alerts: {}, order: {}, repeat: {}, rdays: {} })); }
+    // Ordem manual das atividades (por fluxo) — usada no arrastar-para-reordenar.
+    function getOrder(sel) { const o = getOverrides(); return (o.order && Array.isArray(o.order[sel])) ? o.order[sel] : []; }
+    function setOrder(sel, arr) { const o = getOverrides(); o.order = o.order || {}; o.order[sel] = arr; setOverrides(o); }
+    function applyOrder(items, sel) {
+        const ord = getOrder(sel); if (!ord.length) return items;
+        const pos = {}; ord.forEach((id, i) => pos[id] = i);
+        return items.map((it, idx) => ({ it, idx })).sort((a, b) => { const pa = pos[a.it.id] == null ? 1e9 + a.idx : pos[a.it.id]; const pb = pos[b.it.id] == null ? 1e9 + b.idx : pos[b.it.id]; return pa - pb; }).map(x => x.it);
+    }
+    function reorderArr(ids, src, target) { const from = ids.indexOf(src); if (from < 0) return; ids.splice(from, 1); let to = ids.indexOf(target); if (to < 0) to = ids.length; ids.splice(to, 0, src); }
 
     function getPos() { try { return JSON.parse(store.get(K_POS, 'null')); } catch (e) { return null; } }
     function setPos(p) { store.set(K_POS, JSON.stringify(p)); }
@@ -207,6 +239,7 @@
         const opd = operationalDate(now);
         let c = getCycle();
         if (!c || c.opDate !== opd) {
+            if (c && c.done) { purgeDoneOnceCustom(c.done); purgeDoneOnceFixed(c.done); }
             c = { opDate: opd, shift: shiftFromTime(now), selection: null, done: {}, na: {} };
             setCycle(c);
             warnedIds = {}; beepedIds = {};
@@ -238,10 +271,19 @@
             return { needSetup: true, shift: c.shift, items: [], total: 0, doneCount: 0, pct: 0, overdue: [], warning: [] };
         }
         const shift = c.shift, done = c.done || {}, naMap = c.na || {}, snoozeMap = c.snooze || {}, t = nowMs();
-        let list = CHECKLISTS[c.selection].filter(a => !(a.dayOnly && shift !== 'day'));
-        const items = list.map((a, idx) => {
+        const ov = getOverrides();
+        const items = [];
+        // id baseado no índice ORIGINAL (estável mesmo ocultando itens).
+        CHECKLISTS[c.selection].forEach((a, idx) => {
+            if (a.dayOnly && shift !== 'day') return;
             const id = c.selection + '_' + idx;
-            const hhmm = (shift === 'night') ? (a.night || null) : (a.day || null);
+            if (ov.hidden[id]) return;   // atividade excluída na aba Editar
+            const frep = ov.repeat[id] || 'daily', fdays = ov.rdays[id] || [];
+            if (frep === 'weekly' && fdays.length && fdays.indexOf(new Date().getDay()) < 0) return;   // recorrência por dia
+            const label = ov.labels[id] || a.t;
+            const url = ov.urls.hasOwnProperty(id) ? (ov.urls[id] || null) : (a.url || null);
+            // Alerta: override (mesmo horário nos 2 turnos) ou o padrão day/night.
+            const hhmm = ov.alerts.hasOwnProperty(id) ? (ov.alerts[id] || null) : ((shift === 'night') ? (a.night || null) : (a.day || null));
             const ts = alertTs(c.opDate, shift, hhmm);
             const secsLeft = ts ? Math.round((ts - t) / 1000) : null;
             const isDone = !!done[id];
@@ -249,38 +291,43 @@
             const satisfied = isDone || isNa;   // "feito" OU "N/A" já satisfaz (não alerta e conta no %)
             const snoozeUntil = snoozeMap[id] || 0;
             const snoozed = !satisfied && t < snoozeUntil;
-            return {
-                id, label: a.t, url: a.url || null, note: a.note || null, eos: !!a.eos, alert: hhmm || null, ts,
+            items.push({
+                id, label: label, url: url, note: a.note || null, eos: !!a.eos, alert: hhmm || null, ts,
+                repeat: frep, days: fdays,
                 done: isDone, na: isNa, allowNa: !!a.naOk, satisfied, secsLeft,
                 snoozed, snoozeLeft: snoozed ? Math.round((snoozeUntil - t) / 1000) : 0,
                 overdue: !!ts && !satisfied && !snoozed && t >= ts,
                 warning: !!ts && !satisfied && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
-            };
+            });
         });
         // Itens pessoais adicionados pelo usuário (aba "Adicionar") — done por dia como os demais.
         // Alerta opcional (ci.alert = 'HH:MM') ancorado no dia operacional/turno, igual aos itens fixos.
         getCustom().forEach(ci => {
+            if (!customAppliesToday(ci)) return;   // recorrência por dia da semana / única
             const id = 'cust_' + ci.id;
             const hhmm = ci.alert || null;
             const ts = alertTs(c.opDate, shift, hhmm);
             const secsLeft = ts ? Math.round((ts - t) / 1000) : null;
             const isDone = !!done[id];
+            const isNa = !!naMap[id];
+            const satisfied = isDone || isNa;
             const snoozeUntil = snoozeMap[id] || 0;
-            const snoozed = !isDone && t < snoozeUntil;
+            const snoozed = !satisfied && t < snoozeUntil;
             items.push({
-                id: id, label: ci.t, url: ci.url || null, note: null, alert: hhmm, ts: ts,
-                done: isDone, na: false, allowNa: false, satisfied: isDone, secsLeft: secsLeft,
+                id: id, label: ci.t, url: ci.url || null, note: null, eos: false, alert: hhmm, ts: ts,
+                done: isDone, na: isNa, allowNa: true, satisfied: satisfied, secsLeft: secsLeft,
                 snoozed: snoozed, snoozeLeft: snoozed ? Math.round((snoozeUntil - t) / 1000) : 0,
-                overdue: !!ts && !isDone && !snoozed && t >= ts,
-                warning: !!ts && !isDone && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
-                custom: true, customId: ci.id,
+                overdue: !!ts && !satisfied && !snoozed && t >= ts,
+                warning: !!ts && !satisfied && !snoozed && secsLeft > 0 && secsLeft <= WARN_SEC,
+                custom: true, customId: ci.id, repeat: ci.repeat || 'daily', days: ci.days || [],
             });
         });
-        const total = items.length, doneCount = items.filter(i => i.satisfied).length;
+        const ordered = applyOrder(items, c.selection);
+        const total = ordered.length, doneCount = ordered.filter(i => i.satisfied).length;
         const pct = total ? Math.round((doneCount / total) * 100) : 0;
-        const overdue = items.filter(i => i.overdue).sort((a, b) => a.ts - b.ts);
-        const warning = items.filter(i => i.warning);
-        return { needSetup: false, selection: c.selection, shift, items, total, doneCount, pct, overdue, warning };
+        const overdue = ordered.filter(i => i.overdue).sort((a, b) => a.ts - b.ts);
+        const warning = ordered.filter(i => i.warning);
+        return { needSetup: false, selection: c.selection, shift, items: ordered, total, doneCount, pct, overdue, warning };
     }
 
     // ── Helpers de UI (CSSOM — seguro sob CSP) ───────────────────────────
@@ -439,11 +486,11 @@
         const mkChkTab = (key, label) => {
             const t = el('button', 'flex:1;background:transparent;border:none;border-bottom:3px solid transparent;'
                 + 'padding:9px 6px;cursor:pointer;font-size:12px;font-weight:800;color:#5B6B7B;' + AMZ, label);
-            t.addEventListener('click', (e) => { e.stopPropagation(); chkTab = key; lastListSig = ''; styleChkTabs(); render(); });
+            t.addEventListener('click', (e) => { e.stopPropagation(); chkTab = key; editingKey = null; lastListSig = ''; styleChkTabs(); render(); });
             return t;
         };
         chkTabBtnTasks = mkChkTab('tasks', '✓ Tarefas');
-        chkTabBtnAdd = mkChkTab('add', '➕ Adicionar');
+        chkTabBtnAdd = mkChkTab('edit', '✏️ Editar');
         chkTabs.appendChild(chkTabBtnTasks); chkTabs.appendChild(chkTabBtnAdd);
         menu.appendChild(chkTabs);
 
@@ -690,18 +737,51 @@
 
     // ── Abas do checklist (Tarefas · ➕ Adicionar) ───────────────────────
     function styleChkTabs() {
-        [['tasks', chkTabBtnTasks], ['add', chkTabBtnAdd]].forEach(p => {
+        [['tasks', chkTabBtnTasks], ['edit', chkTabBtnAdd]].forEach(p => {
             const t = p[1]; if (!t) return; const on = chkTab === p[0];
             t.style.borderBottom = on ? '3px solid #FF9900' : '3px solid transparent';
             t.style.color = on ? '#232F3E' : '#5B6B7B';
             t.style.background = on ? '#FFF7E6' : 'transparent';
         });
         // A busca só faz sentido na aba de tarefas.
-        if (chkSearchBar) chkSearchBar.style.display = (chkTab === 'add') ? 'none' : 'flex';
+        if (chkSearchBar) chkSearchBar.style.display = (chkTab === 'edit') ? 'none' : 'flex';
     }
 
-    // Monta a aba "➕ Adicionar": formulário (item + alerta opcional) + lista dos itens pessoais.
-    function buildAddView() {
+    // Controle de repetição (para itens pessoais): Todo dia · Dias da semana · Única.
+    function buildRepeatControl(parent, cur) {
+        cur = cur || {}; let days = Array.isArray(cur.days) ? cur.days.slice() : [];
+        const box = el('div', 'margin-top:9px;');
+        const row = el('div', 'display:flex;align-items:center;gap:8px;');
+        row.appendChild(el('span', 'flex:none;font-size:12.5px;font-weight:700;color:#232F3E;' + AMZ, '🔁'));
+        const sel = el('select', 'flex:1;padding:7px 8px;border:1px solid #CBD3DB;border-radius:8px;font-size:12.5px;background:#fff;color:#232F3E;cursor:pointer;' + AMZ);
+        [['daily', 'Todo dia'], ['weekly', 'Dias da semana'], ['once', 'Única (uma vez)']].forEach(o => { const op = el('option', '', o[1]); op.value = o[0]; if (o[0] === (cur.repeat || 'daily')) op.selected = true; sel.appendChild(op); });
+        sel.addEventListener('keydown', (e) => e.stopPropagation());
+        row.appendChild(sel); box.appendChild(row);
+        const daysRow = el('div', 'display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;');
+        const names = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'], short = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+        for (let k = 0; k < 7; k++) {
+            const b = el('button', 'flex:0 0 auto;width:32px;height:30px;border-radius:8px;border:1px solid #CBD3DB;cursor:pointer;font-size:12px;font-weight:800;' + AMZ, short[k]);
+            b.title = names[k]; b.type = 'button';
+            const paint = () => { const on = days.indexOf(k) >= 0; b.style.background = on ? '#FF9900' : '#fff'; b.style.color = on ? '#131921' : '#5B6B7B'; b.style.borderColor = on ? '#FF9900' : '#CBD3DB'; };
+            paint();
+            b.addEventListener('click', (e) => { e.stopPropagation(); const idx = days.indexOf(k); if (idx >= 0) days.splice(idx, 1); else days.push(k); paint(); });
+            daysRow.appendChild(b);
+        }
+        box.appendChild(daysRow);
+        const syncVis = () => { daysRow.style.display = (sel.value === 'weekly') ? 'flex' : 'none'; };
+        sel.addEventListener('change', syncVis); syncVis();
+        parent.appendChild(box);
+        return { get() { const r = sel.value; return { repeat: r, days: r === 'weekly' ? days.slice().sort((a, b) => a - b) : [] }; } };
+    }
+    function repeatBadge(i) {
+        if (i.repeat === 'once') return '🔂 única';
+        if (i.repeat === 'weekly' && i.days && i.days.length) { const s = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S']; return '📅 ' + i.days.slice().sort((a, b) => a - b).map(d => s[d]).join(''); }
+        return '';
+    }
+
+    // Monta a aba "✏️ Editar": formulário para adicionar + TODAS as atividades (editar/N-A/excluir).
+    let editingKey = null;   // id da atividade em edição (abre o formulário inline)
+    function buildEditView() {
         if (!listEl) return;
         listEl.textContent = '';
 
@@ -746,6 +826,13 @@
             if (alertChk.checked) { if (!timeInput.value) timeInput.value = '12:00'; timeInput.focus(); }
         });
         form.appendChild(alertRow);
+        const repCtl = buildRepeatControl(form, {});
+        // N/A (opcional) — marca o novo item como Não Aplicável já ao adicionar.
+        const naRow = el('div', 'display:flex;align-items:center;gap:8px;margin-top:9px;');
+        const naLbl = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;font-weight:700;color:#232F3E;user-select:none;' + AMZ);
+        const naChk = el('input', 'width:16px;height:16px;accent-color:#5B6B7B;cursor:pointer;'); naChk.type = 'checkbox';
+        naLbl.appendChild(naChk); naLbl.appendChild(el('span', '', '🚫 opção de N/A'));
+        naRow.appendChild(naLbl); form.appendChild(naRow);
 
         const addBtn = el('button', 'width:100%;margin-top:11px;background:#FF9900;border:none;border-radius:8px;color:#232F3E;'
             + 'padding:9px 12px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '＋ Adicionar');
@@ -758,44 +845,150 @@
             const alert = (alertChk.checked && timeInput.value) ? timeInput.value : null;
             let url = urlInput.value.trim();
             if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;   // completa o esquema se faltar
-            addCustomItem(v, alert, url || null);
-            lastListSig = ''; buildAddView(); render();
+            const rep = repCtl.get();
+            const cid = addCustomItem(v, alert, url || null, rep.repeat, rep.days);
+            if (naChk.checked && cid) toggleNa('cust_' + cid);
+            lastListSig = ''; buildEditView(); render();
             if (addInput) addInput.focus();
         }
 
         listEl.appendChild(form);
 
-        // ── Lista dos itens pessoais existentes ───────────────────────
-        const custom = getCustom();
-        if (!custom.length) {
-            listEl.appendChild(el('div', 'padding:16px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;line-height:1.5;',
-                'Sem itens pessoais.\nAdicione tarefas suas acima — elas aparecem na aba “✓ Tarefas”.'));
+        // ── Todas as atividades do fluxo atual (editar texto / N/A / excluir) ──
+        const s = computeState();
+        if (s.needSetup) {
+            listEl.appendChild(el('div', 'padding:14px 10px;text-align:center;color:#5B6B7B;font-size:12.5px;line-height:1.5;',
+                'Escolha o fluxo do dia para ver e editar as atividades.'));
             return;
         }
-        custom.forEach(ci => {
-            const row = el('div', 'display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #E3E7EC;'
-                + 'border-radius:9px;padding:9px 10px;margin-bottom:7px;');
-            const mid = el('div', 'flex:1 1 auto;min-width:0;');
-            mid.appendChild(el('div', 'font-size:13px;font-weight:700;color:#232F3E;word-break:break-word;' + AMZ, ci.t));
-            const meta = [ci.alert ? ('⏰ Alerta ' + ci.alert) : '— sem alerta'];
-            if (ci.url) meta.push('🔗 com link');
-            mid.appendChild(el('div', 'font-size:10.5px;font-weight:700;margin-top:2px;color:' + (ci.alert ? '#E88B00' : '#9AA7B4') + ';',
-                meta.join('  ·  ')));
-            row.appendChild(mid);
-            if (ci.url) {
-                const lb = el('button', 'flex:0 0 auto;background:#fff;border:1px solid #FF9900;color:#FF9900;border-radius:8px;'
-                    + 'padding:6px 9px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '🔗');
-                lb.title = 'Abrir link';
-                lb.addEventListener('click', (e) => { e.stopPropagation(); openUrl(ci.url); });
-                row.appendChild(lb);
-            }
-            const rm = el('button', 'flex:0 0 auto;background:#fff;border:1.5px solid #CC0000;border-radius:8px;color:#CC0000;'
-                + 'padding:6px 9px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '✕');
-            rm.title = 'Remover este item pessoal';
-            rm.addEventListener('click', (e) => { e.stopPropagation(); removeCustomItem(ci.id); lastListSig = ''; buildAddView(); render(); });
-            row.appendChild(rm);
-            listEl.appendChild(row);
+        listEl.appendChild(el('div', 'font-size:11px;font-weight:800;color:#5B6B7B;margin:4px 2px 8px;letter-spacing:.04em;', 'ATIVIDADES DO FLUXO'));
+        // Fixas de hoje + TODOS os itens pessoais (mesmo os que não são de hoje, p/ poder editar).
+        const c2 = ensureCycle(); const sel = c2.selection; const ov = getOverrides();
+        let rows = [];
+        // Fixas: TODAS (mesmo as de outro dia da semana / dayOnly), aplicando os overrides.
+        (CHECKLISTS[sel] || []).forEach((a, idx) => {
+            const id = sel + '_' + idx;
+            if (ov.hidden[id]) return;
+            const hhmm = ov.alerts.hasOwnProperty(id) ? (ov.alerts[id] || null) : ((c2.shift === 'night') ? (a.night || null) : (a.day || null));
+            rows.push({ id: id, label: ov.labels[id] || a.t, url: ov.urls.hasOwnProperty(id) ? (ov.urls[id] || null) : (a.url || null), alert: hhmm, na: !!(c2.na || {})[id], repeat: ov.repeat[id] || 'daily', days: ov.rdays[id] || [], allowNa: !!a.naOk });
         });
+        // Itens pessoais (todos)
+        getCustom().forEach(ci => { const id = 'cust_' + ci.id; rows.push({ id: id, label: ci.t, url: ci.url || null, alert: ci.alert || null, na: !!(c2.na || {})[id], custom: true, customId: ci.id, repeat: ci.repeat || 'daily', days: ci.days || [] }); });
+        rows = applyOrder(rows, sel);
+        const orderIds = rows.map(r => r.id);
+        rows.forEach(i => {
+            if (editingKey === i.id) listEl.appendChild(buildEditForm(i));
+            else listEl.appendChild(buildEditRowCompact(i, orderIds, sel));
+        });
+        // Restaurar atividades padrão (desfaz exclusões/renomeações das atividades fixas).
+        const reset = el('button', 'width:100%;margin-top:6px;background:#EAEDF0;border:1px solid #CBD3DB;color:#5B6B7B;'
+            + 'border-radius:8px;padding:8px 12px;cursor:pointer;font-size:12px;font-weight:700;' + AMZ, '↺ Restaurar atividades padrão');
+        reset.title = 'Desfaz exclusões e renomeações das atividades fixas (não afeta itens pessoais)';
+        reset.addEventListener('click', (e) => { e.stopPropagation(); resetOverrides(); lastListSig = ''; render(); });
+        listEl.appendChild(reset);
+    }
+
+    // Linha compacta: alça p/ arrastar (todas) · texto (clica p/ editar) · N/A rápido · ✏️.
+    function buildEditRowCompact(i, orderIds, selection) {
+        const row = el('div', 'display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #E3E7EC;'
+            + 'border-radius:9px;padding:8px 9px;margin-bottom:7px;');
+        row.addEventListener('mouseenter', () => { if (!dragId) row.style.background = '#F7FAFF'; });
+        row.addEventListener('mouseleave', () => row.style.background = '#fff');
+        const handle = el('span', 'flex:0 0 auto;cursor:grab;color:#B9C4CE;font-size:15px;line-height:1;', '⠿');
+        handle.title = 'Arraste para reordenar';
+        row.appendChild(handle);
+        const lbl = el('div', 'flex:1 1 auto;min-width:0;font-size:12.5px;font-weight:600;color:#232F3E;cursor:pointer;'
+            + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' + (i.na ? 'text-decoration:line-through;color:#8090A0;' : ''), i.label);
+        lbl.title = 'Clique para editar';
+        lbl.addEventListener('click', (e) => { e.stopPropagation(); editingKey = i.id; buildEditView(); });
+        row.appendChild(lbl);
+        const badge = repeatBadge(i);
+        if (badge) row.appendChild(el('span', 'flex:0 0 auto;font-size:10px;font-weight:800;color:#7C8B99;background:#EEF1F4;border-radius:6px;padding:2px 6px;', badge));
+        const naBtn = el('button', 'flex:0 0 auto;background:' + (i.na ? '#5B6B7B' : '#fff') + ';border:1px solid #5B6B7B;color:' + (i.na ? '#fff' : '#5B6B7B') + ';border-radius:7px;padding:5px 7px;cursor:pointer;font-size:11px;font-weight:800;' + AMZ, 'N/A');
+        naBtn.title = i.na ? 'Desmarcar N/A' : 'Marcar como Não Aplicável';
+        naBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleNa(i.id); lastListSig = ''; render(); });
+        row.appendChild(naBtn);
+        const pen = el('button', 'flex:0 0 auto;background:#fff;border:1px solid #CBD3DB;color:#5B6B7B;border-radius:7px;padding:5px 7px;cursor:pointer;font-size:13px;' + AMZ, '✏️');
+        pen.title = 'Editar';
+        pen.addEventListener('click', (e) => { e.stopPropagation(); editingKey = i.id; buildEditView(); });
+        row.appendChild(pen);
+        // Arrastar para reordenar (todas as atividades; a ordem é salva por fluxo).
+        row.draggable = true;
+        row.addEventListener('dragstart', (e) => { dragId = i.id; row.style.opacity = '.4'; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.id); } catch (_) {} });
+        row.addEventListener('dragend', () => { row.style.opacity = '1'; dragId = null; });
+        row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.borderColor = '#FF9900'; });
+        row.addEventListener('dragleave', () => { row.style.borderColor = '#E3E7EC'; });
+        row.addEventListener('drop', (e) => { e.preventDefault(); row.style.borderColor = '#E3E7EC'; const src = dragId || (e.dataTransfer && e.dataTransfer.getData('text/plain')); if (src && src !== i.id) { const ids = orderIds.slice(); reorderArr(ids, src, i.id); setOrder(selection, ids); lastListSig = ''; buildEditView(); } });
+        return row;
+    }
+
+    // Formulário de edição inline (texto + link + alerta + N/A + salvar/excluir).
+    function buildEditForm(i) {
+        const wrap = el('div', 'background:#fff;border:1px solid #1F6FD6;border-radius:11px;padding:11px;margin-bottom:9px;box-shadow:0 2px 8px rgba(31,111,214,.12);');
+        const fieldCss = 'width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #CBD3DB;border-radius:8px;font-size:13px;background:#fff;color:#232F3E;' + AMZ;
+
+        // Fechar (sem alterar)
+        const head = el('div', 'display:flex;justify-content:flex-end;margin:-2px -2px 6px;');
+        const close = el('button', 'background:#EAEDF0;border:1px solid #CBD3DB;color:#5B6B7B;border-radius:7px;width:26px;height:26px;cursor:pointer;font-weight:800;line-height:1;padding:0;' + AMZ, '✕');
+        close.title = 'Fechar sem alterar';
+        close.addEventListener('click', (e) => { e.stopPropagation(); editingKey = null; lastListSig = ''; render(); });
+        head.appendChild(close);
+        wrap.appendChild(head);
+
+        const txtInp = el('input', fieldCss); txtInp.type = 'text'; txtInp.value = i.label; txtInp.placeholder = 'Texto da atividade…';
+        txtInp.addEventListener('keydown', (e) => e.stopPropagation());
+        wrap.appendChild(txtInp);
+
+        const urlInp = el('input', fieldCss + 'margin-top:9px;'); urlInp.type = 'text'; urlInp.value = i.url || ''; urlInp.placeholder = '🔗 Link (opcional)…';
+        urlInp.addEventListener('keydown', (e) => e.stopPropagation());
+        wrap.appendChild(urlInp);
+
+        // Alerta (checkbox + horário)
+        const alertRow = el('div', 'display:flex;align-items:center;gap:8px;margin-top:9px;');
+        const alertLbl = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;font-weight:700;color:#232F3E;user-select:none;' + AMZ);
+        const alertChk = el('input', 'width:16px;height:16px;accent-color:#FF9900;cursor:pointer;'); alertChk.type = 'checkbox'; alertChk.checked = !!i.alert;
+        alertLbl.appendChild(alertChk); alertLbl.appendChild(el('span', '', '🔔 Alerta'));
+        alertRow.appendChild(alertLbl);
+        const timeInp = el('input', 'flex:0 0 auto;padding:7px 9px;border:1px solid #CBD3DB;border-radius:8px;font-size:13px;background:#fff;color:#232F3E;' + AMZ);
+        timeInp.type = 'time'; timeInp.value = i.alert || ''; timeInp.disabled = !i.alert; timeInp.style.opacity = i.alert ? '1' : '.45';
+        timeInp.addEventListener('keydown', (e) => e.stopPropagation());
+        alertChk.addEventListener('change', () => { timeInp.disabled = !alertChk.checked; timeInp.style.opacity = alertChk.checked ? '1' : '.45'; if (alertChk.checked) { if (!timeInp.value) timeInp.value = '12:00'; timeInp.focus(); } });
+        alertRow.appendChild(timeInp);
+        wrap.appendChild(alertRow);
+
+        // Repetição — para qualquer atividade (fixa ou pessoal).
+        const repCtl = buildRepeatControl(wrap, { repeat: i.repeat, days: i.days });
+
+        // N/A — no mesmo estilo da linha de Alerta (checkbox + rótulo). Aplicado ao Salvar.
+        const naRow = el('div', 'display:flex;align-items:center;gap:8px;margin-top:9px;');
+        const naLbl = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12.5px;font-weight:700;color:#232F3E;user-select:none;' + AMZ);
+        const naChk = el('input', 'width:16px;height:16px;accent-color:#5B6B7B;cursor:pointer;'); naChk.type = 'checkbox'; naChk.checked = !!i.na;
+        naLbl.appendChild(naChk); naLbl.appendChild(el('span', '', '🚫 opção de N/A'));
+        naRow.appendChild(naLbl);
+        wrap.appendChild(naRow);
+
+        // Ações: Salvar · Excluir (vermelho)
+        const actions = el('div', 'display:flex;gap:8px;margin-top:11px;');
+        const save = el('button', 'flex:1;background:#FF9900;border:none;color:#131921;border-radius:8px;padding:9px 12px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '💾 Salvar');
+        save.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const v = txtInp.value.trim() || i.label;
+            let url = urlInp.value.trim(); if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+            const alert = (alertChk.checked && timeInp.value) ? timeInp.value : null;
+            const rep = repCtl.get();
+            if (i.custom) updateCustomItem(i.customId, { t: v, url: url || null, alert: alert, repeat: rep.repeat, days: rep.days });
+            else { setItemLabel(i.id, v); setItemUrl(i.id, url); setItemAlert(i.id, alert); setItemRepeat(i.id, rep.repeat, rep.days); }
+            if (!!naChk.checked !== !!i.na) toggleNa(i.id);   // aplica N/A conforme o checkbox
+            editingKey = null; lastListSig = ''; render();
+        });
+        const del = el('button', 'flex:0 0 auto;background:#fff;border:1.5px solid #CC0000;color:#CC0000;border-radius:8px;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:800;' + AMZ, '🗑 Excluir');
+        del.title = i.custom ? 'Remover item pessoal' : 'Excluir esta atividade';
+        del.addEventListener('click', (e) => { e.stopPropagation(); if (i.custom) removeCustomItem(i.customId); else hideItem(i.id); editingKey = null; lastListSig = ''; render(); });
+        actions.appendChild(save); actions.appendChild(del);
+        wrap.appendChild(actions);
+
+        setTimeout(() => { try { txtInp.focus(); txtInp.setSelectionRange(txtInp.value.length, txtInp.value.length); } catch (e) {} }, 40);
+        return wrap;
     }
 
     // ── Linha da tarefa ──────────────────────────────────────────────────
@@ -914,7 +1107,7 @@
     function hideTakeover() { if (!take || take._closing) return; const t = take; take._closing = true; take = null; fadeOut(t, 160, () => t.remove()); }
 
     // ── EOS (End of Shift): wizard de coleta + gerador de e-mail ─────────
-    let eosData = null, eosOverlay = null, eosStep = 1, eosImgBlob = null;
+    let eosData = null, eosOverlay = null, eosStep = 1, eosImgBlob = null, eosImgs = {};
     function isOnbSel(sel) { return sel === 'onb1' || sel === 'onb2' || sel === 'onb3'; }
     function fmtDateBR(opDate) { const p = (opDate || operationalDate(new Date())).split('-'); return p[2] + '/' + p[1] + '/' + p[0]; }
     // Abre a criação de e-mail (compose) do Outlook já com o destinatário e o assunto.
@@ -1126,25 +1319,32 @@
         return { table: t, body: tb };
     }
 
-    // Monta o corpo do e-mail como TABELA (bgcolor) → cola no Outlook com cores e estrutura.
-    function buildEosEmailNode() {
-        const onb = isOnbSel(eosData.selection);
-        const st = computeState();
-        const checked = st.items.filter(i => i.done && !i.eos).map(i => i.label);
-
+    // ── Blocos do corpo do e-mail (montados como TABELA + bgcolor) ───────
+    function eosMakeBox() {
         const box = eosTag('table', 'border-collapse:collapse;width:620px;max-width:100%;background-color:#ffffff;'
-            + 'border:1px solid #C9CFD6;font-family:Arial,\'Segoe UI\',sans-serif;color:#232F3E;', { width: '620', cellpadding: '0', cellspacing: '0', border: '0', bgcolor: '#ffffff' });
+            + 'font-family:Arial,\'Segoe UI\',sans-serif;color:#232F3E;', { width: '620', cellpadding: '0', cellspacing: '0', border: '0', bgcolor: '#ffffff' });
         const tbody = el('tbody', ''); box.appendChild(tbody);
-
-        // Cabeçalho (fundo escuro)
+        return { box, tbody };
+    }
+    // Tira só com barra(s) de seção → rasterizada como imagem (mantém as cores no Outlook).
+    function buildEosBarStrip(kind) {
+        const { box, tbody } = eosMakeBox();
+        if (kind === 'obs') eosBarRow(tbody, 'OBSERVAÇÕES', '#FF9900', '#ffffff');
+        else if (kind === 'barrHead') { eosBarRow(tbody, 'BARREIRAS'); eosSubRow(tbody, 'BARREIRA DA ÁREA'); }
+        else if (kind === 'oper') eosSubRow(tbody, 'BARREIRA OPERACIONAL');
+        return box;
+    }
+    function eosAppendHeader(tbody) {
         const hdTr = el('tr', '');
         const hdTd = eosTag('td', 'padding:22px 16px;text-align:center;background-color:#232F3E;', { bgcolor: '#232F3E', align: 'center' });
         const hTitle = el('div', 'font-size:22px;letter-spacing:1px;'); hTitle.appendChild(eosFont('#FF9900', 'END OF SHIFT', true));
         const hDate = el('div', 'font-size:12px;padding-top:4px;'); hDate.appendChild(eosFont('#FF9900', fmtDateBR(eosData.opDate)));
         hdTd.appendChild(hTitle); hdTd.appendChild(hDate);
         hdTr.appendChild(hdTd); tbody.appendChild(hdTr);
-
-        // ROTINA
+    }
+    function eosAppendRotina(tbody) {
+        const st = computeState();
+        const checked = st.items.filter(i => i.done && !i.eos).map(i => i.label);
         eosBarRow(tbody, 'ROTINA');
         const rot = eosInnerTable();
         const hr = el('tr', '');
@@ -1166,8 +1366,9 @@
             });
         }
         const rotTr = el('tr', ''); const rotTd = el('td', 'padding:0;'); rotTd.appendChild(rot.table); rotTr.appendChild(rotTd); tbody.appendChild(rotTr);
-
-        // ONBOARDING / TURNO
+    }
+    function eosAppendCounters(tbody) {
+        const onb = isOnbSel(eosData.selection);
         eosBarRow(tbody, onb ? 'ONBOARDING' : 'TURNO');
         const cols = onb
             ? [['PREVISTO', eosData.previsto], ['PRESENTES', eosData.presentes], ['SETOR', eosData.setor]]
@@ -1184,19 +1385,17 @@
         });
         cnt.body.appendChild(cr);
         const cntTr = el('tr', ''); const cntTd = el('td', 'padding:0;'); cntTd.appendChild(cnt.table); cntTr.appendChild(cntTd); tbody.appendChild(cntTr);
-
-        // OBSERVAÇÕES (barra laranja) + texto
+    }
+    function eosAppendObsBarr(tbody) {
         eosBarRow(tbody, 'OBSERVAÇÕES', '#FF9900', '#ffffff');
         eosTextRow(tbody, eosData.obsText || '');
-
-        // BARREIRAS (barra cinza) + 2 subtítulos (Área / Operacional) + textos
         eosBarRow(tbody, 'BARREIRAS');
         eosSubRow(tbody, 'BARREIRA DA ÁREA');
         eosTextRow(tbody, eosData.barrArea || '');
         eosSubRow(tbody, 'BARREIRA OPERACIONAL');
         eosTextRow(tbody, eosData.barrOper || '');
-
-        // Rodapé (assinatura)
+    }
+    function eosAppendFooter(tbody) {
         const ftTr = el('tr', ''); const ftTd = el('td', 'padding:16px;font-size:12.5px;color:#232F3E;line-height:1.6;border-top:1px solid #E3E7EC;border-bottom:1px solid #C9CFD6;');
         ftTd.appendChild(el('div', '', 'Atenciosamente,'));
         ftTd.appendChild(el('div', 'height:8px;line-height:8px;font-size:1px;', '\u00A0'));
@@ -1209,8 +1408,54 @@
         const wLine = el('div', 'font-style:italic;margin-top:4px;'); wLine.appendChild(eosFont('#7C8B99', 'Work hard, Have fun, Make history.'));
         ftTd.appendChild(wLine);
         ftTr.appendChild(ftTd); tbody.appendChild(ftTr);
-
+    }
+    // E-mail completo (usado no PREVIEW colorido).
+    function buildEosEmailNode() {
+        const { box, tbody } = eosMakeBox();
+        eosAppendHeader(tbody); eosAppendRotina(tbody); eosAppendCounters(tbody); eosAppendObsBarr(tbody); eosAppendFooter(tbody);
         return box;
+    }
+    // Parte IMUTÁVEL (cabeçalho + ROTINA + ONBOARDING/TURNO) → vira imagem na cópia.
+    function buildEosTopNode() {
+        const { box, tbody } = eosMakeBox();
+        eosAppendHeader(tbody); eosAppendRotina(tbody); eosAppendCounters(tbody);
+        return box;
+    }
+
+    // ── Cópia híbrida: imagem (topo imutável) + Observações/Barreiras como TEXTO editável ──
+    function eosHtmlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    function eosBr(s) { return eosHtmlEsc(s).replace(/\n/g, '<br>'); }
+    function eosImgsReady() { return !!(eosImgs.top && eosImgs.obsBar && eosImgs.barrHead && eosImgs.oper); }
+    // HTML da cópia HÍBRIDA: barras/topo como IMAGEM (mantêm cores) + Observações/Barreiras como TEXTO editável.
+    function eosBuildHybridHtml() {
+        const imgCss = 'display:block;width:100%;border:0;margin:0;';
+        const txt = 'padding:12px 16px;font-size:12.5px;line-height:1.6;color:#232F3E;';
+        const imgRow = (url, alt) => '<tr><td style="padding:0;"><img src="' + url + '" alt="' + alt + '" style="' + imgCss + '"/></td></tr>';
+        let h = '<meta charset="utf-8"><table width="620" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:620px;max-width:100%;background-color:#ffffff;border:1px solid #C9CFD6;font-family:Arial,\'Segoe UI\',sans-serif;color:#232F3E;"><tbody>';
+        h += imgRow(eosImgs.top, 'EOS');
+        h += imgRow(eosImgs.obsBar, 'OBSERVACOES');
+        h += '<tr><td style="' + txt + '">' + eosBr(eosData.obsText || '') + '</td></tr>';
+        h += imgRow(eosImgs.barrHead, 'BARREIRAS');
+        h += '<tr><td style="' + txt + '">' + eosBr(eosData.barrArea || '') + '</td></tr>';
+        h += imgRow(eosImgs.oper, 'BARREIRA OPERACIONAL');
+        h += '<tr><td style="' + txt + '">' + eosBr(eosData.barrOper || '') + '</td></tr>';
+        h += '<tr><td style="padding:16px;font-size:12.5px;line-height:1.6;color:#232F3E;border-top:1px solid #E3E7EC;">'
+            + 'Atenciosamente,<br><br><b>' + eosHtmlEsc(eosData.login) + '</b> | Learning - GRU5<br>'
+            + eosHtmlEsc(eosData.login) + '@amazon.com<br><i style="color:#7C8B99;">Work hard, Have fun, Make history.</i></td></tr>';
+        h += '</tbody></table>';
+        return h;
+    }
+    function eosPlainText() {
+        const onb = isOnbSel(eosData.selection);
+        const counters = onb
+            ? 'ONBOARDING\nPrevisto: ' + (eosData.previsto || '—') + ' · Presentes: ' + (eosData.presentes || '—') + ' · Setor: ' + (eosData.setor || '—')
+            : 'TURNO\nQtd Apollos: ' + (eosData.apollos || '—') + ' · Qtd Tickets: ' + (eosData.tickets || '—');
+        return 'END OF SHIFT - ' + fmtDateBR(eosData.opDate)
+            + '\n\n' + counters
+            + '\n\nOBSERVAÇÕES\n' + (eosData.obsText || '')
+            + '\n\nBARREIRAS\nBarreira da Área\n' + (eosData.barrArea || '')
+            + '\n\nBarreira Operacional\n' + (eosData.barrOper || '')
+            + '\n\nAtenciosamente,\n' + eosData.login + ' | Learning - GRU5\n' + eosData.login + '@amazon.com\nWork hard, Have fun, Make history.';
     }
 
     function generateEos() {
@@ -1256,7 +1501,7 @@
     }
 
     // Rasteriza um nó DOM para PNG (SVG foreignObject → canvas). Preserva TODAS as cores,
-    // porque vira imagem — imune ao sanitizador do Outlook. cb(blob|null).
+    // porque vira imagem — imune ao sanitizador do Outlook. cb(blob|null, dataUrl).
     function eosNodeToPng(node, cb) {
         const holder = el('div', 'position:fixed;left:-99999px;top:0;width:620px;background:#ffffff;');
         holder.appendChild(node);
@@ -1266,7 +1511,7 @@
         let xml = '';
         try { xml = new XMLSerializer().serializeToString(node); } catch (e) { xml = ''; }
         try { document.body.removeChild(holder); } catch (e) {}
-        if (!xml) { cb(null); return; }
+        if (!xml) { cb(null, ''); return; }
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
             + '<foreignObject x="0" y="0" width="' + w + '" height="' + h + '">'
             + '<div xmlns="http://www.w3.org/1999/xhtml" style="width:' + w + 'px;">' + xml + '</div>'
@@ -1281,11 +1526,47 @@
                 ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
                 ctx.setTransform(scale, 0, 0, scale, 0, 0);
                 ctx.drawImage(img, 0, 0);
-                canvas.toBlob(function (b) { cb(b); }, 'image/png');
-            } catch (e) { cb(null); }
+                let du = '';
+                try { du = canvas.toDataURL('image/png'); } catch (e) {}
+                canvas.toBlob(function (b) { cb(b, du); }, 'image/png');
+            } catch (e) { cb(null, ''); }
         };
-        img.onerror = function () { cb(null); };
+        img.onerror = function () { cb(null, ''); };
         img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    }
+
+    // Cópia HÍBRIDA: imagem do topo imutável + Observações/Barreiras como texto editável → abre Outlook.
+    function eosCopyHybridAndOpen(btn) {
+        if (!eosImgsReady()) {
+            if (btn) { const t0 = btn.textContent; btn.textContent = '⏳ Gerando imagem… tente de novo'; setTimeout(() => { btn.textContent = t0; }, 1800); }
+            return;
+        }
+        const html = eosBuildHybridHtml();
+        const plain = eosPlainText();
+        let ok = false;
+        if (typeof GM_setClipboard === 'function') {
+            try { GM_setClipboard(html, { type: 'html', mimetype: 'text/html' }); ok = true; } catch (e) {}
+        }
+        if (!ok && navigator.clipboard && window.ClipboardItem) {
+            try {
+                navigator.clipboard.write([new ClipboardItem({
+                    'text/html': new Blob([html], { type: 'text/html' }),
+                    'text/plain': new Blob([plain], { type: 'text/plain' }),
+                })]);
+                ok = true;
+            } catch (e) {}
+        }
+        if (!ok) {
+            try {
+                const tmp = el('div', 'position:fixed;left:-99999px;top:0;'); tmp.innerHTML = html;
+                document.body.appendChild(tmp);
+                const range = document.createRange(); range.selectNode(tmp);
+                const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+                ok = document.execCommand('copy'); sel.removeAllRanges(); tmp.remove();
+            } catch (e) {}
+        }
+        if (btn) { const t0 = btn.textContent; btn.textContent = ok ? '✓ Copiado! Abrindo Outlook…' : '⚠ Não copiou'; setTimeout(() => { btn.textContent = t0; }, 1800); }
+        openUrl(eosComposeUrl());
     }
     function eosDownload(blob, name) {
         try {
@@ -1313,8 +1594,15 @@
     function showEosPreview(emailNode) {
         ensureEosOverlay();
         eosOverlay.textContent = '';
-        eosImgBlob = null;
-        // Pré-gera a imagem (assíncrono) para que o clique em "Copiar imagem" seja imediato.
+        eosImgBlob = null; eosImgs = {};
+        // Pré-gera as imagens (assíncrono) p/ o clique ser imediato:
+        //  • topo imutável (cabeçalho+ROTINA+ONBOARDING/TURNO) e as BARRAS (OBSERVAÇÕES/BARREIRAS/subtítulos)
+        //    viram imagem (mantêm as cores); Observações/Barreiras ficam como texto editável.
+        eosNodeToPng(buildEosTopNode(), (b, url) => { eosImgs.top = url; });
+        eosNodeToPng(buildEosBarStrip('obs'), (b, url) => { eosImgs.obsBar = url; });
+        eosNodeToPng(buildEosBarStrip('barrHead'), (b, url) => { eosImgs.barrHead = url; });
+        eosNodeToPng(buildEosBarStrip('oper'), (b, url) => { eosImgs.oper = url; });
+        //  • e-mail completo → usado no botão "Tudo imagem".
         eosNodeToPng(emailNode.cloneNode(true), (b) => { eosImgBlob = b; });
 
         const card = el('div', 'width:min(700px,96vw);max-height:92vh;overflow:auto;background:#fff;border-radius:16px;'
@@ -1322,9 +1610,12 @@
         const hd = el('div', 'background:linear-gradient(135deg,#2C3E50,#232F3E 55%,#131921);padding:14px 18px;color:#fff;'
             + 'display:flex;align-items:center;gap:8px;position:sticky;top:0;flex-wrap:wrap;');
         hd.appendChild(el('span', 'font-size:15px;font-weight:800;flex:1 1 100%;margin-bottom:4px;', 'EOS pronto'));
-        const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '🖼️ Copiar imagem');
-        imgBtn.title = 'Copia como imagem (mantém as cores) e abre o Outlook';
+        const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '📋 Copiar EOS');
+        imgBtn.title = 'Topo (cabeçalho/ROTINA/contadores) como imagem + Observações/Barreiras como texto editável, e abre o Outlook';
         hd.appendChild(imgBtn);
+        const htmlBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, ' ️ Tudo imagem');
+        htmlBtn.title = 'Copia o EOS inteiro como imagem (nada editável)';
+        hd.appendChild(htmlBtn);
         const backBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '← Editar');
         backBtn.addEventListener('click', () => { eosStep = 3; renderEosStep(); });
         hd.appendChild(backBtn);
@@ -1334,7 +1625,7 @@
         card.appendChild(hd);
 
         card.appendChild(el('div', 'padding:8px 16px;font-size:11.5px;color:#5B6B7B;background:#FFF7E6;border-bottom:1px solid #F0E2C0;line-height:1.5;',
-            'Clique em “🖼️ Copiar imagem” (mantém as cores). O Outlook abre em outra aba — crie um novo e-mail e cole (Ctrl+V).'));
+            '“📋 Copiar EOS”: o topo (cabeçalho/ROTINA/contadores) vai como imagem (mantém as cores) e Observações/Barreiras como texto editável. O Outlook abre em outra aba — cole (Ctrl+V) e edite os textos se precisar.'));
 
         const wrap = el('div', 'padding:16px;background:#EEF1F4;');
         const holder = el('div', 'margin:0 auto;box-shadow:0 2px 10px rgba(0,0,0,.1);width:620px;max-width:100%;');
@@ -1344,7 +1635,8 @@
 
         eosOverlay.appendChild(card);
         fadeIn(card, 200, 10);
-        imgBtn.addEventListener('click', () => eosCopyImageAndOpen(imgBtn));
+        imgBtn.addEventListener('click', () => eosCopyHybridAndOpen(imgBtn));
+        htmlBtn.addEventListener('click', () => eosCopyImageAndOpen(htmlBtn));
     }
 
     // ── Menu visível (fade só na mudança) ────────────────────────────────
@@ -1463,13 +1755,15 @@
 
         if (menuOpen) {
             hdPct.textContent = s.pct + '% (' + s.doneCount + '/' + s.total + ')';
-            if (chkTab === 'add') {
-                // Aba "➕ Adicionar": só reconstrói quando a lista de itens pessoais muda
-                // (preserva o foco do input entre ticks de 1s).
-                const sig = 'add|' + getCustom().map(c => c.id + ':' + c.t + ':' + (c.alert || '') + ':' + (c.url || '')).join('|');
-                if (sig !== lastListSig || listEl.childElementCount === 0) {
-                    lastListSig = sig;
-                    buildAddView();
+            if (chkTab === 'edit') {
+                // Enquanto um item está em edição, NÃO reconstrói (preserva o formulário e o que foi digitado).
+                if (!editingKey) {
+                    const sig = 'edit|' + s.items.map(i => i.id + '~' + i.label + '~' + (i.na ? 'N' : '') + (i.done ? 'D' : '')).join('|')
+                        + '|cust=' + getCustom().map(ci => ci.id + ':' + ci.t + ':' + (ci.repeat || '') + ':' + ((ci.days || []).join('')) + ':' + (ci.alert || '') + ':' + (ci.url || '')).join('|');
+                    if (sig !== lastListSig || listEl.childElementCount === 0) {
+                        lastListSig = sig;
+                        buildEditView();
+                    }
                 }
             } else {
                 // Aba "✓ Tarefas": lista de tarefas com filtro de busca.
@@ -2337,7 +2631,7 @@
                 [['day', '☀️ Dia (05:30–18:00)'], ['night', '🌙 Noite (18:00–05:30)'], ['d6to5', '🕕 (D-1)06:00–05:00 '], ['full', '🗓️ Dia todo (00:00–00:00)']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
                 const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
                 const previewEl = document.createElement('div'); previewEl.style.cssText = 'flex-shrink:0;padding:2px 14px 8px;background:#fff;border-bottom:1px solid ' + C.border + ';font-size:11px;font-weight:700;color:' + C.blue + ';';
-                const syncPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
+                const syncaPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
                 const applyFilter = () => { currentFilter = { mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }; saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
                 selMode.onchange = applyFilter; inpDate.onchange = applyFilter;
                 fRow.appendChild(selMode); fRow.appendChild(inpDate);
