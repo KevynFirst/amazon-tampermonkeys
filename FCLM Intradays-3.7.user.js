@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FCLM Intradays
 // @namespace    http://tampermonkey.net/
-// @version      3.7
-// @description  Add intraday(s) buttons + SELECT ALL no employeeRoster + link TOT/HC
+// @version      4.0
+// @description  Add intraday(s) buttons + SELECT ALL no employeeRoster + link TOT/HC + ícones de busca no Time Details
 // @author       ladislke
 // @match        https://fclm-portal.amazon.com/*
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
@@ -20,6 +20,11 @@
 // v3.4 — ppaTimeOnTask: oculta shift buttons + divider (já tem Day/Night Range nativos)
 // v3.5 — Correção: shift buttons + divider ocultados no ppaAttendance (não ppaTimeOnTask)
 // v3.6 — Re-exclui ppaAttendance/employeeAttendance (TOT button vai direto no script PPA v4.9)
+// v3.8 — Time Details: 3 ícones de busca (📦 Guided Coaching / 🛒 Picking Console / � FMC Inbound Stow)
+//        com o login do associado, iguais aos do Acompanhamento LC. Login lido do XPath
+//        /html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[1]; warehouseId vem da URL.
+//        Também mostra o login do manager na frente do nome (dd[6]/a) — buscado na
+//        própria página do manager, já que o href só traz o ID — com botão de copiar.
 
 
 // Horários dos turnos
@@ -452,3 +457,226 @@ var interval = setInterval(function(){
     }, 300);
 })();
 
+
+
+// ── v3.8: Ícones de busca (login) na página Time Details ────────────────
+// Na página /employee/timeDetails, injeta 3 ícones ao lado do login do
+// associado, abrindo as MESMAS ferramentas de busca do Acompanhamento LC:
+//   📦 Guided Coaching (transcript)  🛒 Picking Console  � FMC Inbound (Stow)
+// O login é lido do XPath informado; o warehouseId (FC) vem da URL.
+(function injectTimeDetailsSearch() {
+    if (!window.location.pathname.startsWith('/employee/timeDetails')) return;
+
+    var LOGIN_XPATH = '/html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[1]';
+
+    function getWarehouseId() {
+        var wh = new URLSearchParams(window.location.search).get('warehouseId');
+        return (wh || 'GRU9').trim();
+    }
+
+    function getLoginNode() {
+        try {
+            return document.evaluate(
+                LOGIN_XPATH, document, null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE, null
+            ).singleNodeValue;
+        } catch (e) { return null; }
+    }
+
+    function getLogin(node) {
+        var t = node ? String(node.textContent || '').trim() : '';
+        if (t) return t;
+        // fallback: parâmetro employeeId da URL
+        return String(new URLSearchParams(window.location.search).get('employeeId') || '').trim();
+    }
+
+    // Link do NOME do manager. O href tem só o ID numérico; o LOGIN (alias) aparece
+    // na própria página do manager (mesmo XPath do associado, dd[1]).
+    var MANAGER_XPATH = '/html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[6]/a';
+    function getManagerNode() {
+        try {
+            return document.evaluate(
+                MANAGER_XPATH, document, null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE, null
+            ).singleNodeValue;
+        } catch (e) { return null; }
+    }
+
+    // "login-like" = tem letra e não é só número (evita pegar o ID numérico).
+    function pareceLogin(v) { return !!v && /[a-zA-Z]/.test(v) && !/^\d+$/.test(v); }
+
+    // Tenta achar um login (alias) SÓ em parâmetros da query que tenham letras.
+    // No FCLM o href traz employeeId NUMÉRICO (Empl ID), então normalmente não há
+    // login aqui — o login real está na página do manager (buscado via fetch).
+    // (NÃO usar segmento do path: "…/employee/timeDetails" cairia em "timeDetails".)
+    function loginDoHref(href) {
+        if (!href) return '';
+        try {
+            var u = new URL(href, window.location.origin);
+            var keys = ['employeeLogin', 'login', 'alias', 'user'];
+            for (var i = 0; i < keys.length; i++) {
+                var v = u.searchParams.get(keys[i]);
+                if (pareceLogin(v)) return v.trim();
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    // Abre a página do manager (mesma origem FCLM) e lê o login do dd[1], igual ao associado.
+    function loginDaPaginaManager(href) {
+        return new Promise(function (resolve) {
+            var abs;
+            try { abs = new URL(href, window.location.origin).href; }
+            catch (e) { resolve(''); return; }
+            fetch(abs, { credentials: 'include' })
+                .then(function (r) { return r.ok ? r.text() : ''; })
+                .then(function (html) {
+                    if (!html) { resolve(''); return; }
+                    try {
+                        var doc = new DOMParser().parseFromString(html, 'text/html');
+                        var n = doc.evaluate(
+                            LOGIN_XPATH, doc, null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                        ).singleNodeValue;
+                        resolve(n ? String(n.textContent || '').trim() : '');
+                    } catch (e) { resolve(''); }
+                })
+                .catch(function () { resolve(''); });
+        });
+    }
+
+    // Copia texto para a área de transferência com feedback visual no botão.
+    function fallbackCopy(txt) {
+        var ta = document.createElement('textarea');
+        ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        document.body.removeChild(ta);
+    }
+    function copiarTexto(txt, el) {
+        function feito() {
+            el.classList.add('ok');
+            setTimeout(function () { el.classList.remove('ok'); }, 900);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(txt).then(feito).catch(function () { fallbackCopy(txt); feito(); });
+        } else { fallbackCopy(txt); feito(); }
+    }
+
+    // Mostra o login do manager (texto puro, FORA do link) na frente do nome padrão,
+    // seguido de um botão de copiar. Mantém o link/nome original intactos.
+    function enriquecerManager() {
+        var mgr = getManagerNode();
+        if (!mgr || mgr.getAttribute('data-lc-login')) return;
+        var parent = mgr.parentNode;
+        if (!parent || parent.querySelector('.lc-mgr-login')) return;
+        var href = mgr.getAttribute('href') || '';
+
+        var aplicar = function (mlogin) {
+            if (!mlogin) return;
+            if (parent.querySelector('.lc-mgr-login')) return;
+            mgr.setAttribute('data-lc-login', mlogin);
+
+            // "tag" (chip) clicável com o login — clicar copia o login do manager
+            var tag = document.createElement('span');
+            tag.className = 'lc-mgr-tag';
+            tag.title = 'Clique para copiar o login do manager (' + mlogin + ')';
+
+            var span = document.createElement('span');
+            span.className = 'lc-mgr-login';
+            span.textContent = mlogin;
+            tag.appendChild(span);
+
+            tag.addEventListener('click', function (ev) {
+                ev.preventDefault(); ev.stopPropagation();
+                copiarTexto(mlogin, tag);
+            });
+
+            // a tag vem DEPOIS do nome
+            var ref = mgr.nextSibling;
+            parent.insertBefore(document.createTextNode(' '), ref);
+            parent.insertBefore(tag, ref);
+        };
+
+        var direto = loginDoHref(href); // raro no FCLM (employeeId é numérico)
+        if (direto) { aplicar(direto); return; }
+        // Busca o login na própria página do manager (campo Login = dd[1]).
+        loginDaPaginaManager(href).then(aplicar);
+    }
+
+    // Monta as 3 ferramentas de busca por login (mesmas do Acompanhamento LC).
+    function ferramentas(login, fc) {
+        var lg = encodeURIComponent(login);
+        return [
+            {
+                icon: '\uD83D\uDCE6', // 📦
+                nome: 'Guided Coaching (transcript)',
+                url: 'https://guided-coaching.corp.amazon.com/#/employee-transcript/' + lg
+            },
+            {
+                icon: '\uD83D\uDED2', // 🛒
+                nome: 'Picking Console',
+                url: 'https://picking-console.na.picking.aft.a2z.com/fc/' + encodeURIComponent(fc) +
+                     '/pick-workforce?tableFilters=%7B%22tokens%22%3A%5B%7B%22propertyKey%22%3A%22userId%22%2C%22propertyLabel%22%3A%22User+Id%22%2C%22value%22%3A%22' +
+                     lg + '%22%2C%22label%22%3A%22' + lg + '%22%2C%22negated%22%3Afalse%7D%5D%2C%22operation%22%3A%22or%22%7D'
+            },
+            {
+                icon: '\uD83D\uDCE5', // �
+                nome: 'FMC Inbound (Stow)',
+                url: 'https://na.prod.fmc.aft.amazon.dev/' + encodeURIComponent(fc) + '/inbound-flow?selected-tab=VL_STOW'
+            }
+        ];
+    }
+
+    var tdStyle = document.createElement('style');
+    tdStyle.innerHTML = `
+        .lc-td-tools { display:inline-flex; gap:6px; margin-left:10px; vertical-align:middle; }
+        .lc-td-tools a {
+            text-decoration:none; font-size:15px; line-height:1;
+            padding:3px 6px; border-radius:6px;
+            border:1px solid rgba(0,0,0,0.15); background:#f4f7fc;
+            box-shadow:0 1px 3px rgba(0,0,0,0.15); transition:all .15s ease;
+        }
+        .lc-td-tools a:hover {
+            background:#e3edfb; transform:translateY(-1px);
+            box-shadow:0 3px 8px rgba(0,0,0,0.2);
+        }
+        /* "tag" (chip) clicável com o login — clicar copia */
+        .lc-mgr-tag {
+            display:inline-flex; align-items:center;
+            padding:2px 9px; margin-left:6px; vertical-align:middle;
+            border:1px solid #cdd8e8; border-radius:12px; background:#f4f7fc;
+            box-shadow:0 1px 3px rgba(0,0,0,0.12);
+            cursor:pointer; transition:all .15s ease; user-select:none;
+        }
+        .lc-mgr-tag:hover { background:#e3edfb; transform:translateY(-1px); }
+        .lc-mgr-tag:active { transform:translateY(0); }
+        .lc-mgr-tag.ok { background:#d7f5df; border-color:#7fd39b; }
+        .lc-mgr-login { color:#232F3E; font-size:12.5px; line-height:1.4; }
+    `;
+    document.head.appendChild(tdStyle);
+
+    var poll = setInterval(function() {
+        if (document.getElementById('lc-td-tools')) { clearInterval(poll); return; }
+        var node = getLoginNode();
+        if (!node) return; // ainda carregando
+
+        var login = getLogin(node);
+        clearInterval(poll);
+        if (!login) return;
+
+        var fc = getWarehouseId();
+        var wrap = document.createElement('span');
+        wrap.id = 'lc-td-tools';
+        wrap.className = 'lc-td-tools';
+        wrap.innerHTML = ferramentas(login, fc).map(function(f) {
+            return '<a href="' + f.url + '" target="_blank" rel="noopener noreferrer" ' +
+                   'title="' + f.nome + ' — ' + login + '">' + f.icon + '</a>';
+        }).join('');
+
+        node.appendChild(wrap);
+
+        // Login do manager na frente do nome + botão de copiar.
+        enriquecerManager();
+    }, 300);
+})();
