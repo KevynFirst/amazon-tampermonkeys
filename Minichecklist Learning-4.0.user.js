@@ -1,17 +1,17 @@
 // ==UserScript==
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
-// @version      7.0
+// @version      7.2
 // @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. No fluxo Onboarding a janela é automática pelo turno; na página fixa do functionRollup há filtro de janela selecionável (Dia/Noite/06→05/Dia todo + data). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
-// @author       ladislkes
+// @author       ladislke
 // @match        *://*/*
 // @match        file:///*
-// @run-at       document-idleaz
+// @run-at       document-idle
 // @connect      fclm-portal.amazon.com
-// @connect      hooks.slack.comac
+// @connect      hooks.slack.com
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_xmlhttpRequesta
+// @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // ==/UserScript==
 //
@@ -134,8 +134,13 @@
             { t: 'Enviar o Checklist do dia?', url: U.checklist, day: '18:00', night: '05:00' },
             { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
         ],
+        // Outros: checklist 100% personalizável. Só traz a atividade fixa "Enviar o EOS?"
+        // (o resto o usuário monta pela aba "Editar", como no "Minichecklist Pessoal").
+        outros: [
+            { t: 'Enviar o EOS?', eos: true, day: '18:00', night: '05:00' },
+        ],
     };
-    const SEL_LABEL = { onb1: 'Onboarding — Dia 1', onb2: 'Onboarding — Dia 2', onb3: 'Onboarding — Dia 3', pa: 'PA', support: 'Support' };
+    const SEL_LABEL = { onb1: 'Onboarding — Dia 1', onb2: 'Onboarding — Dia 2', onb3: 'Onboarding — Dia 3', pa: 'PA', support: 'Support', outros: 'Outros' };
 
     const WARN_SEC = 120;         // abre o menu 2 min antes do alerta
     const SOUND_LEAD_SEC = 60;    // bip 1 min antes do alerta
@@ -158,6 +163,11 @@
     const K_MODE  = 'chkatv_mode';
     const K_CUSTOM = 'chkatv_custom'; // [{ id, t }] — itens pessoais adicionados pelo usuário
     const K_OVERRIDES = 'chkatv_overrides'; // { hidden:{id:true}, labels:{id:'novo texto'} } — edições nas atividades fixas
+    const K_EOS_OUTROS = 'chkatv_eos_outros'; // { t1, t2 } — títulos personalizados dos 2 campos do EOS no fluxo "Outros"
+
+    // ── Títulos personalizados do EOS no fluxo "Outros" (persistem entre turnos) ──
+    function getEosOutrosTitles() { try { const v = JSON.parse(store.get(K_EOS_OUTROS, 'null')); if (v && typeof v === 'object') return { t1: v.t1 || '', t2: v.t2 || '' }; } catch (e) {} return { t1: 'Apollos', t2: 'Tickets' }; }
+    function setEosOutrosTitles(t1, t2) { store.set(K_EOS_OUTROS, JSON.stringify({ t1: t1 || '', t2: t2 || '' })); }
 
     // ── Itens pessoais (aba "Editar") ────────────────────────────────────
     function getCustom() { try { const v = JSON.parse(store.get(K_CUSTOM, '[]')); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
@@ -596,8 +606,10 @@
             try { b.animate([{ opacity: 0, transform: 'translate(' + Math.round(cx - bx - sz / 2) + 'px,' + Math.round(cy - by - sz / 2) + 'px) scale(.4)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing: 'cubic-bezier(.34,1.4,.4,1)' }); } catch (e2) {}
             radialEl.appendChild(b);
         };
+        const c2 = ensureCycle();
+        const hoursLabel = isOnbFlow(c2.selection) ? 'Abrir Onboarding Hours' : 'Abrir Learning Hours';
         mk('🗒️', 'Abrir Checklist', -26, () => { if (onbModule) onbModule.closeAll(); menuOpen = true; render(); }, 'linear-gradient(145deg,#37475A,#232F3E)');
-        mk('📊', 'Abrir Onboarding Hours', 26, () => { menuOpen = false; setMenuVisible(false); if (onbModule) onbModule.openOverlay(); render(); }, 'linear-gradient(145deg,#f59e0b,#c77800)');
+        mk('📊', hoursLabel, 26, () => { menuOpen = false; setMenuVisible(false); if (onbModule) onbModule.openOverlay(); render(); }, 'linear-gradient(145deg,#f59e0b,#c77800)');
         document.body.appendChild(radialEl);
         fadeIn(radialEl, 120);
     }
@@ -641,10 +653,10 @@
                 const c = ensureCycle();
                 if (!c.selection) { setupPostponed = false; showSetup(); }   // sem fluxo → reabre o setup
                 else {
-                    const onbAvail = onFclmOnbReport() || /^onb/.test(c.selection || '');
+                    const onbAvail = onFclmOnbReport() || flowHasHours(c.selection);
                     if (radialEl) hideRadial();
                     else if (onbAvail) showRadial();   // 2 opções: Checklist / Onboarding Hours
-                    else menuOpen = true;              // fluxos sem onboarding → abre o checklist direto
+                    else menuOpen = true;              // fluxos sem horas → abre o checklist direto
                 }
                 render();
             }
@@ -716,6 +728,7 @@
             card.appendChild(el('div', 'font-size:15px;font-weight:700;margin-bottom:12px;', 'Qual é o seu fluxo hoje?'));
             card.appendChild(bigBtn('PA', 'linear-gradient(180deg,#3aa0ff,#1f6fd6)', () => choose('pa')));
             card.appendChild(bigBtn('Support', 'linear-gradient(180deg,#2ecc71,#1e8449)', () => choose('support')));
+            card.appendChild(bigBtn('Outros (checklist personalizável)', 'linear-gradient(180deg,#8e6bd6,#5b3fa0)', () => choose('outros')));
             const back = el('button', 'margin-top:8px;background:transparent;border:none;color:#8aa1b6;cursor:pointer;font-size:12px;' + FF, '← Voltar');
             back.addEventListener('click', () => renderSetupStep(1));
             card.appendChild(back);
@@ -1120,9 +1133,12 @@
     function openEosWizard() {
         const c = ensureCycle();
         if (!c.selection) { toast('Escolha o fluxo do dia antes de montar o EOS.'); return; }
+        const et = getEosOutrosTitles();
         eosData = {
             selection: c.selection, opDate: c.opDate, login: '',
             previsto: '', presentes: '', setor: '', apollos: '', tickets: '',
+            // Fluxo "Outros": 2 campos com título e conteúdo personalizáveis e opcionais.
+            c1Title: et.t1, c1: '', c2Title: et.t2, c2: '',
             obsText: '', barrArea: '', barrOper: '',
         };
         eosStep = 1; renderEosStep();
@@ -1212,7 +1228,9 @@
 
     function buildEosStep2(body) {
         const onb = isOnbSel(eosData.selection);
-        body.appendChild(el('p', 'font-size:13px;color:#5B6B7B;margin:0 0 4px;line-height:1.5;', onb ? 'Dados do Onboarding.' : 'Dados do turno.'));
+        const outros = eosData.selection === 'outros';
+        body.appendChild(el('p', 'font-size:13px;color:#5B6B7B;margin:0 0 4px;line-height:1.5;',
+            onb ? 'Dados do Onboarding.' : (outros ? 'Campos personalizáveis — edite o título e o conteúdo. Todos são opcionais (pode deixar em branco).' : 'Dados do turno.')));
         const numRefs = [];
         const numField = (label, key) => {
             const inp = eosField(body, label, eosData[key], 'number', '0', (v) => { eosData[key] = v; });
@@ -1221,10 +1239,31 @@
             inp.addEventListener('input', () => { inp.style.borderColor = '#CBD3DB'; err.style.display = 'none'; });
             numRefs.push({ inp, key, label });
         };
+        // Campo do fluxo "Outros": título editável + conteúdo livre, ambos opcionais.
+        const customField = (n, titleKey, valKey, phTitle) => {
+            const wrap = el('div', 'margin-top:14px;padding:12px;border:1px solid #E3E7EC;border-radius:11px;background:#FAFBFC;');
+            wrap.appendChild(el('div', 'font-size:11px;font-weight:800;color:#7C8B99;margin-bottom:7px;text-transform:uppercase;letter-spacing:.4px;', 'Campo ' + n + ' (opcional)'));
+            wrap.appendChild(el('div', 'font-size:12px;font-weight:800;color:#232F3E;margin:0 0 5px;', 'Título'));
+            const tInp = el('input', 'width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #CBD3DB;border-radius:9px;font-size:14px;color:#232F3E;background:#fff;' + AMZ);
+            tInp.type = 'text'; tInp.placeholder = phTitle; tInp.value = eosData[titleKey] || '';
+            tInp.addEventListener('keydown', (e) => e.stopPropagation());
+            tInp.addEventListener('input', () => { eosData[titleKey] = tInp.value; setEosOutrosTitles(eosData.c1Title, eosData.c2Title); });
+            wrap.appendChild(tInp);
+            wrap.appendChild(el('div', 'font-size:12px;font-weight:800;color:#232F3E;margin:11px 0 5px;', 'Conteúdo'));
+            const vInp = el('input', 'width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid #CBD3DB;border-radius:9px;font-size:14px;color:#232F3E;background:#fff;' + AMZ);
+            vInp.type = 'text'; vInp.placeholder = 'ex.: 12 (ou texto livre)'; vInp.value = eosData[valKey] || '';
+            vInp.addEventListener('keydown', (e) => e.stopPropagation());
+            vInp.addEventListener('input', () => { eosData[valKey] = vInp.value; });
+            wrap.appendChild(vInp);
+            body.appendChild(wrap);
+        };
         if (onb) {
             numField('Previsto', 'previsto');
             numField('Presentes', 'presentes');
             eosField(body, 'Setor', eosData.setor, 'text', 'ex.: Pack / Pick / Docas', (v) => { eosData.setor = v; });
+        } else if (outros) {
+            customField(1, 'c1Title', 'c1', 'ex.: Apollos');
+            customField(2, 'c2Title', 'c2', 'ex.: Tickets');
         } else {
             numField('Qtd Apollos', 'apollos');
             numField('Qtd Tickets resolvidos', 'tickets');
@@ -1369,10 +1408,23 @@
     }
     function eosAppendCounters(tbody) {
         const onb = isOnbSel(eosData.selection);
+        const outros = eosData.selection === 'outros';
+        let cols;
+        if (onb) {
+            cols = [['PREVISTO', eosData.previsto], ['PRESENTES', eosData.presentes], ['SETOR', eosData.setor]];
+        } else if (outros) {
+            // Só entram os campos preenchidos (título e/ou conteúdo). Todos vazios → sem seção.
+            cols = [];
+            [['c1Title', 'c1'], ['c2Title', 'c2']].forEach(([tk, vk], i) => {
+                const title = (eosData[tk] || '').trim(), val = (eosData[vk] || '').trim();
+                if (!title && !val) return;
+                cols.push([(title || ('CAMPO ' + (i + 1))).toUpperCase(), val]);
+            });
+            if (!cols.length) return;   // nada preenchido → não gera a barra "TURNO"
+        } else {
+            cols = [['QTD APOLLOS', eosData.apollos], ['QTD TICKETS', eosData.tickets]];
+        }
         eosBarRow(tbody, onb ? 'ONBOARDING' : 'TURNO');
-        const cols = onb
-            ? [['PREVISTO', eosData.previsto], ['PRESENTES', eosData.presentes], ['SETOR', eosData.setor]]
-            : [['QTD APOLLOS', eosData.apollos], ['QTD TICKETS', eosData.tickets]];
         const cnt = eosInnerTable();
         const cr = el('tr', '');
         const colW = Math.round(100 / cols.length) + '%';
@@ -1613,7 +1665,7 @@
         const imgBtn = el('button', 'background:#FF9900;border:none;color:#131921;border-radius:9px;padding:9px 14px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '📋 Copiar EOS');
         imgBtn.title = 'Topo (cabeçalho/ROTINA/contadores) como imagem + Observações/Barreiras como texto editável, e abre o Outlook';
         hd.appendChild(imgBtn);
-        const htmlBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, ' ️ Tudo imagem');
+        const htmlBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '�️ Tudo imagem');
         htmlBtn.title = 'Copia o EOS inteiro como imagem (nada editável)';
         hd.appendChild(htmlBtn);
         const backBtn = el('button', 'background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer;font-size:13px;' + AMZ, '← Editar');
@@ -1653,6 +1705,11 @@
     function onFclmOnbReport() {
         return /^https?:\/\/fclm-portal\.amazon\.com\/reports\/functionRollup/i.test(location.href);
     }
+    // Fluxos que exibem o painel de horas (Learning Hours): Onboarding (Dia 1/2/3), PA e Outros.
+    // Support não tem visão de horas.
+    function flowHasHours(sel) { return /^onb/.test(sel || '') || sel === 'pa' || sel === 'outros'; }
+    // Fluxos de Onboarding (usam as abas extras "Precisa logar" / "Logado errado" e o anel vermelho).
+    function isOnbFlow(sel) { return /^onb/.test(sel || ''); }
 
     // ── 100% concluído: centraliza o círculo no topo + comemoração ───────
     function centerFab() {
@@ -1715,7 +1772,7 @@
         // Onboarding/Learning Hours (barra + dashboard): ativo quando o fluxo é Onboarding OU
         // sempre que estiver em qualquer relatório functionRollup do FCLM (painel fixo).
         if (onbModule) {
-            const onbActive = onFclmOnbReport() || (!s.needSetup && /^onb/.test(s.selection || ''));
+            const onbActive = onFclmOnbReport() || (!s.needSetup && flowHasHours(s.selection));
             if (onbActive) onbModule.enable(); else onbModule.disable();
         }
 
@@ -2570,7 +2627,8 @@
             const head = document.createElement('div'); head.style.cssText = 'background:' + C.headerGrad + ';color:#fff;padding:11px 14px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
             const dia = (() => { const h = new Date().getHours(); return h >= 6 && h < 18; })();
             const headLeft = document.createElement('div');
-            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (onFclmReport() ? (modeLabel(currentFilter.mode) + ' Learning Hours') : ((dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>')) + '</div>';
+            const onbFlowNow = /^onb/.test(daySel() || '');
+            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (onFclmReport() ? (modeLabel(currentFilter.mode) + ' Learning Hours') : (onbFlowNow ? ((dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>') : ((dia ? '☀️' : '🌙') + ' Learning Hours <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>'))) + '</div>';
             const updatedEl = document.createElement('div'); updatedEl.style.cssText = 'font-size:10px;font-weight:600;color:' + C.gold + ';margin-top:2px;'; updatedEl.textContent = 'atualizado ' + fmtTime(new Date());
             const nextEl = document.createElement('div'); nextEl.style.cssText = 'font-size:10px;font-weight:600;color:#9fb3c8;margin-top:1px;';
             headLeft.appendChild(updatedEl); headLeft.appendChild(nextEl); head.appendChild(headLeft);
@@ -2631,7 +2689,7 @@
                 [['day', '☀️ Dia (05:30–18:00)'], ['night', '🌙 Noite (18:00–05:30)'], ['d6to5', '🕕 (D-1)06:00–05:00 '], ['full', '🗓️ Dia todo (00:00–00:00)']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
                 const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
                 const previewEl = document.createElement('div'); previewEl.style.cssText = 'flex-shrink:0;padding:2px 14px 8px;background:#fff;border-bottom:1px solid ' + C.border + ';font-size:11px;font-weight:700;color:' + C.blue + ';';
-                const syncaPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
+                const syncPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
                 const applyFilter = () => { currentFilter = { mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }; saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
                 selMode.onchange = applyFilter; inpDate.onchange = applyFilter;
                 fRow.appendChild(selMode); fRow.appendChild(inpDate);
