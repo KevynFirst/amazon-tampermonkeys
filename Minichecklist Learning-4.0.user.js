@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
-// @version      7.2
-// @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. No fluxo Onboarding a janela é automática pelo turno; na página fixa do functionRollup há filtro de janela selecionável (Dia/Noite/06→05/Dia todo + data). Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
+// @version      7.7
+// @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. A janela é SEMPRE o intraday do turno de hoje (sem filtro selecionável). No Mais detalhes há também a aba "Precisa logar" agrupada por calm code. Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
 // @author       ladislke
 // @match        *://*/*
 // @match        file:///*
@@ -13,6 +13,8 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
+// @updateURL    https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/Minichecklist%20Learning-5.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/Minichecklist%20Learning-5.0.user.js
 // ==/UserScript==
 //
 // OBJETIVO: ajudar a NÃO esquecer as tarefas de maior impacto do turno.
@@ -160,6 +162,7 @@
     };
     const K_CYCLE = 'chkatv_cycle';   // { opDate, shift, selection, done }
     const K_POS   = 'chkatv_pos';
+    const K_HIDDEN = 'chkatv_hidden'; // '1' = círculo (FAB) oculto via Ctrl+Alt+H
     const K_MODE  = 'chkatv_mode';
     const K_CUSTOM = 'chkatv_custom'; // [{ id, t }] — itens pessoais adicionados pelo usuário
     const K_OVERRIDES = 'chkatv_overrides'; // { hidden:{id:true}, labels:{id:'novo texto'} } — edições nas atividades fixas
@@ -271,9 +274,14 @@
     let menuOpen = false, menuVisible = false, warnedIds = {}, beepedIds = {}, listFilter = '', chkTab = 'tasks';
     let audioCtx = null, centered = false, setupPostponed = false, lastListSig = '', radialEl = null;
     let ringEl = null, ringBadge = null, erradoCount = 0;   // anel vermelho de "logados errados"
-    // Lembrete de hora cheia: guarda a última hora (0–23) em que o menu abriu sozinho,
-    // para abrir só 1x por hora quando o overlay está no modo círculo (menu fechado).
-    let lastAutoOpenHour = new Date().getHours();
+    // Círculo oculto pelo atalho Ctrl+Alt+H (persiste). Não afeta alertas nem o Onboarding Hours.
+    let fabHidden = (store.get(K_HIDDEN, '') === '1');
+    function toggleFabHidden() {
+        fabHidden = !fabHidden;
+        store.set(K_HIDDEN, fabHidden ? '1' : '');
+        if (fabHidden) { menuOpen = false; setMenuVisible(false); if (radialEl) hideRadial(); }
+        render();
+    }
 
     function computeState() {
         const c = ensureCycle();
@@ -536,7 +544,7 @@
     // Um overlay (checklist OU onboarding hours) está aberto? → o círculo some.
     function overlayOpen() { return menuVisible || (onbModule && onbModule.isOpen()); }
     function applyGroupVisibility() {
-        const hide = overlayOpen();
+        const hide = overlayOpen() || fabHidden;   // Ctrl+Alt+H também oculta o círculo
         if (fab) fab.style.display = hide ? 'none' : '';
         if (hide) { if (ringEl) ringEl.style.display = 'none'; if (ringBadge) ringBadge.style.display = 'none'; }
     }
@@ -572,7 +580,7 @@
         if (!ringEl) return;
         const c = ensureCycle();
         const onbAvail = c.selection && (onFclmOnbReport() || /^onb/.test(c.selection || ''));
-        if (!onbAvail || overlayOpen() || erradoCount <= 0) {
+        if (!onbAvail || overlayOpen() || fabHidden || erradoCount <= 0) {
             ringEl.style.display = 'none'; if (ringBadge) ringBadge.style.display = 'none'; stopPulse(ringEl);
             return;
         }
@@ -1797,13 +1805,8 @@
         if (s.needSetup) { setMenuVisible(false); hideTakeover(); if (!setupPostponed) showSetup(); return; }
         hideSetup();
 
-        // Lembrete de hora cheia: ao virar a hora, se o overlay está no modo círculo
-        // (menu fechado), abre a lista sozinho para lembrar do checklist.
-        const curHour = new Date().getHours();
-        if (curHour !== lastAutoOpenHour) {
-            lastAutoOpenHour = curHour;
-            if (!menuOpen) menuOpen = true;
-        }
+        // A lista NÃO abre sozinha a cada hora cheia (atrapalhava). Só abre no clique do
+        // círculo. Os alertas por horário continuam funcionando normalmente.
 
         if (hdSubTxt) hdSubTxt.textContent = (SEL_LABEL[s.selection] || '') + ' · Turno ' + (s.shift === 'day' ? 'Day ☀️' : 'Night 🌙');
         if (modeBtn) { const a = mode === 'alert'; modeBtn.textContent = a ? '🔔 Alerta (trava + som)' : '🔕 Silencioso (sem travar)'; modeBtn.style.borderColor = a ? '#ff9900' : '#52708c'; modeBtn.style.color = a ? '#ffce7a' : '#8aa1b6'; }
@@ -1897,6 +1900,7 @@
             { key: 'recv', name: 'Receive',     processId: '1003033' },
             { key: 'vret', name: 'V-Returns',   processId: '1003059' },
             { key: 'prep', name: 'Prep',        processId: '1003048' },
+            { key: 'log', name: '🔁 Precisa logar', virtual: true },    // faltando em calm code (Dia 1/2)
             { key: 'errado', name: 'Logado errado', virtual: true },   // General FC Training nos Dias 2/3
             { key: 'badge', name: 'Ajuste de Badge', virtual: true },
         ];
@@ -1945,58 +1949,8 @@
         function limitLabel() { return limitByHours ? '⏱️ Limitar por horas' : '📋 Mostrar todos'; }
         function listTitle() { return limitByHours ? 'Acima em hora' : 'Todos (horas logadas)'; }
 
-        // ── Filtro de janela selecionável (só na página fixa do FCLM) ──────────
-        // Fora da página do FCLM (fluxo Onboarding Dia 1/2/3), a janela é detectada
-        // automaticamente pelo turno atual (dia/noite/madrugada) — comportamento antigo.
-        const FILTER_KEY = 'fclm_onb_window_filter';
         function pad2(n) { return String(n).padStart(2, '0'); }
-        function ymdSlash(d) { return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); }
-        function ymdDash(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
-        function loadFilter() { try { const s = gmGet(FILTER_KEY, ''); if (s) return JSON.parse(s); } catch (e) {} return { mode: 'day', date: ymdDash(new Date()) }; }
-        function saveFilter(f) { gmSet(FILTER_KEY, JSON.stringify(f)); }
-        let currentFilter = loadFilter();
-        const modeLabel = m => m === 'night' ? '🌙 Noite' : (m === 'full' ? '🗓️ Dia todo' : (m === 'd6to5' ? '🕕 06→05' : '☀️ Dia'));
-        function buildWindowParams(f) {
-            const parts = String(f.date || '').split('-').map(Number);
-            const base = (parts.length === 3 && !parts.some(isNaN)) ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
-            const next = new Date(base); next.setDate(base.getDate() + 1);
-            const p = new URLSearchParams();
-            p.set('warehouseId', WAREHOUSE);
-            if (f.mode === 'full') {
-                p.set('spanType', 'Day');
-                p.set('startDate', ymdDash(base) + 'T00:00:00.000');
-                p.set('endDate', ymdDash(next) + 'T00:00:00.000');
-            } else if (f.mode === 'night') {
-                p.set('maxIntradayDays', '2'); p.set('spanType', 'Intraday');
-                p.set('startDateIntraday', ymdSlash(base)); p.set('startHourIntraday', '18'); p.set('startMinuteIntraday', '0');
-                p.set('endDateIntraday', ymdSlash(next)); p.set('endHourIntraday', '5'); p.set('endMinuteIntraday', '30');
-            } else if (f.mode === 'd6to5') {
-                const prev = new Date(base); prev.setDate(base.getDate() - 1);
-                p.set('maxIntradayDays', '2'); p.set('spanType', 'Intraday');
-                p.set('startDateIntraday', ymdSlash(prev)); p.set('startHourIntraday', '6'); p.set('startMinuteIntraday', '0');
-                p.set('endDateIntraday', ymdSlash(base)); p.set('endHourIntraday', '5'); p.set('endMinuteIntraday', '0');
-            } else {
-                p.set('maxIntradayDays', '1'); p.set('spanType', 'Intraday');
-                p.set('startDateIntraday', ymdSlash(base)); p.set('startHourIntraday', '5'); p.set('startMinuteIntraday', '30');
-                p.set('endDateIntraday', ymdSlash(base)); p.set('endHourIntraday', '18'); p.set('endMinuteIntraday', '0');
-            }
-            return p;
-        }
-        function windowPreviewText(f) {
-            const parts = String(f.date || '').split('-').map(Number);
-            const base = (parts.length === 3 && !parts.some(isNaN)) ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
-            const next = new Date(base); next.setDate(base.getDate() + 1);
-            const prev = new Date(base); prev.setDate(base.getDate() - 1);
-            const dm = d => pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1);
-            const hm = (h, m) => pad2(h) + ':' + pad2(m);
-            let sD, sH, sM, eD, eH, eM;
-            if (f.mode === 'full') { sD = base; sH = 0; sM = 0; eD = next; eH = 0; eM = 0; }
-            else if (f.mode === 'night') { sD = base; sH = 18; sM = 0; eD = next; eH = 5; eM = 30; }
-            else if (f.mode === 'd6to5') { sD = prev; sH = 6; sM = 0; eD = base; eH = 5; eM = 0; }
-            else { sD = base; sH = 5; sM = 30; eD = base; eH = 18; eM = 0; }
-            return dm(sD) + ' ' + hm(sH, sM) + ' → ' + dm(eD) + ' ' + hm(eH, eM);
-        }
-        // Janela AUTOMÁTICA pelo turno atual (fluxo Onboarding fora da página do FCLM).
+        // Janela SEMPRE automática pelo turno atual de hoje (sem filtro selecionável).
         function autoShiftParams() {
             const now = new Date();
             const mins = now.getHours() * 60 + now.getMinutes();
@@ -2016,8 +1970,8 @@
         }
 
         function reportUrl(processId) {
-            // Na página fixa do FCLM usa a janela selecionável; fora dela, a janela do turno.
-            const p = onFclmReport() ? buildWindowParams(currentFilter) : autoShiftParams();
+            // SEM filtro selecionável: a janela é SEMPRE o intraday do turno de hoje.
+            const p = autoShiftParams();
             p.set('reportFormat', 'HTML');
             p.set('processId', processId || ONB_PROCESS);
             return FCLM_ORIGIN + '/reports/functionRollup?' + p.toString();
@@ -2480,7 +2434,29 @@
             fr.trainings.forEach((t, i) => { html += '<div class="onb-train-card" data-idx="' + i + '" style="background:#fff;border:1px solid ' + C.border + ';border-left:4px solid ' + C.accent + ';border-radius:10px;padding:14px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(35,47,62,0.06);transition:all .15s ease;"><div style="font-size:15px;font-weight:700;color:' + C.dark + ';">' + esc(t.title) + '</div><div style="font-size:26px;font-weight:800;color:' + C.blue + ';margin-top:4px;">' + t.people.length + ' <span style="font-size:13px;color:' + C.grey + ';font-weight:600;">associado(s)</span></div></div>'; });
             html += '</div>';
             html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;margin-bottom:18px;"><div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">' + (limitByHours ? '⏰' : '📋') + ' ' + esc(listTitle()) + ' (' + exceeding.length + ')' + (limitByHours ? ' <span style="font-weight:600;color:' + C.grey + ';font-size:12px;">— ' + esc(fr.trainings.map(t => t.title + ' > ' + getLimit(t) + 'h').join(' · ')) + '</span>' : '') + '</div>';
-            if (exceeding.length) { const hClr = limitByHours ? C.red : C.blue; const by = groupByManager(exceeding, e => e.title || 'Sem função'); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>'; by[fn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.manager) + ')</span>' : '') + badgeTag(e.total) + '</div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
+            if (exceeding.length) { const hClr = limitByHours ? C.red : C.blue; const by = groupByManager(exceeding, e => e.title || 'Sem função'); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>'; by[fn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + badgeTag(e.total) + '</div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
+            html += '</div>';
+            return html;
+        }
+        // "Precisa logar" no Mais detalhes — agrupado por CALM CODE que falta.
+        function buildLogHTML(fr) {
+            const list = computeFaltantes(fr);
+            const byCode = {};
+            list.forEach(({ p, falta }) => falta.forEach(code => { (byCode[code] = byCode[code] || []).push(p); }));
+            const codes = Object.keys(byCode).sort((a, b) => a.localeCompare(b));
+            let html = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px;">'
+                + '<div style="background:linear-gradient(135deg,#E88B00,#8a5300);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">🔁 Precisa logar</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + list.length + '</div></div>'
+                + '<div style="background:linear-gradient(135deg,#37475A,#1a2530);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Calm codes</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + codes.length + '</div></div></div>';
+            html += '<div style="font-size:12px;font-weight:700;color:' + C.grey + ';margin-bottom:10px;">' + (isDay1()
+                ? 'Dia 1: quem está em General FC Training e falta em FC Safety Tour / Safety School.'
+                : (isDay2() ? 'Dia 2: quem está em Learning e não está em nenhum calm code de Training.' : 'Disponível nos fluxos de Onboarding Dia 1 e Dia 2.')) + '</div>';
+            html += '<div style="background:rgba(232,139,0,0.06);border:1px solid ' + C.amber + ';border-radius:12px;padding:14px 16px;">';
+            if (codes.length) {
+                codes.forEach(code => {
+                    html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(code) + ' <span style="font-weight:600;color:' + C.gold + ';">(' + byCode[code].length + ')</span></div>';
+                    byCode[code].forEach(p => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(p.name, p.link) + '</div>'; });
+                });
+            } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Ninguém precisa ser logado ✅</div>'; }
             html += '</div>';
             return html;
         }
@@ -2534,7 +2510,7 @@
             const procObj = k => PROCESSES.find(p => p.key === k) || PROCESSES[0];
             const procTabs = document.createElement('div'); procTabs.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
             const procBtns = PROCESSES.map(pr => { const b = document.createElement('button'); b.dataset.proc = pr.key; b.onclick = () => { currentProc = pr.key; renderD(); }; procTabs.appendChild(b); return b; });
-            function procHasData(key) { return key === 'badge' ? badgeEntries(currentR).length > 0 : key === 'errado' ? logadoErrado(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
+            function procHasData(key) { return key === 'log' ? computeFaltantes(currentR).length > 0 : key === 'badge' ? badgeEntries(currentR).length > 0 : key === 'errado' ? logadoErrado(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
             function styleProcBtns() { procBtns.forEach(b => { const pr = procObj(b.dataset.proc); const on = b.dataset.proc === currentProc; const hasData = procHasData(b.dataset.proc); b.innerHTML = esc(pr.name); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + C.dark + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')); }); }
             const btnLimits = document.createElement('button'); btnLimits.innerHTML = '⏱️ Ver limites de horas';
             btnLimits.title = 'Apenas visualização dos limites de horas (não é possível alterar)';
@@ -2557,7 +2533,9 @@
             const content = document.createElement('div'); body.appendChild(filterBar); body.appendChild(procTabs); body.appendChild(content); box.appendChild(body);
             function renderD() {
                 currentR = filterByManager(r, sel.value); styleProcBtns();
-                if (currentProc === 'badge') { viewR = currentR; content.innerHTML = buildBadgeHTML(currentR); }
+                btnLimits.style.display = (currentProc === 'log') ? 'none' : '';   // limites não se aplicam aqui
+                if (currentProc === 'log') { viewR = currentR; content.innerHTML = buildLogHTML(currentR); }
+                else if (currentProc === 'badge') { viewR = currentR; content.innerHTML = buildBadgeHTML(currentR); }
                 else if (currentProc === 'errado') { viewR = currentR; content.innerHTML = buildLogadoErradoHTML(currentR); }
                 else { viewR = filterByProcess(currentR, currentProc); content.innerHTML = buildDashHTML(viewR); }
             }
@@ -2628,7 +2606,7 @@
             const dia = (() => { const h = new Date().getHours(); return h >= 6 && h < 18; })();
             const headLeft = document.createElement('div');
             const onbFlowNow = /^onb/.test(daySel() || '');
-            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (onFclmReport() ? (modeLabel(currentFilter.mode) + ' Learning Hours') : (onbFlowNow ? ((dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>') : ((dia ? '☀️' : '🌙') + ' Learning Hours <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>'))) + '</div>';
+            headLeft.innerHTML = '<div style="font-size:14px;font-weight:700;">' + (onbFlowNow ? ((dia ? '☀️' : '🌙') + ' Alertas de Onboarding <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>') : ((dia ? '☀️' : '🌙') + ' Learning Hours <span style="font-size:11px;font-weight:600;opacity:.85;">(' + (dia ? 'Dia' : 'Noite') + ')</span>')) + '</div>';
             const updatedEl = document.createElement('div'); updatedEl.style.cssText = 'font-size:10px;font-weight:600;color:' + C.gold + ';margin-top:2px;'; updatedEl.textContent = 'atualizado ' + fmtTime(new Date());
             const nextEl = document.createElement('div'); nextEl.style.cssText = 'font-size:10px;font-weight:600;color:#9fb3c8;margin-top:1px;';
             headLeft.appendChild(updatedEl); headLeft.appendChild(nextEl); head.appendChild(headLeft);
@@ -2650,8 +2628,9 @@
             const mgrHeader = (mgr) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';">👤 ' + esc(mgr) + '</div>';
             const fnHeader = (fn) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>';
             // Agrupado pelo CALM CODE (função) logado — não mais por gestor.
-            function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém acima do limite ✅</div>'; return; } const by = groupByManager(exceeding, e => e.title || 'Sem função'); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += fnHeader(fn); by[fn].forEach(e => { const over = e.total > e.limit; html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + (over ? C.red : C.navy) + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.manager) + ')</span>' : '') + '</div>'; }); }); body.innerHTML = html; }
-            function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const by = groupByManager(faltantes, x => x.p.manager); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(({ p, falta }) => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + ' — colocar em: <span style="color:' + C.red + ';">' + esc(falta.join(', ')) + '</span></div>'; }); }); body.innerHTML = html; }
+            function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém acima do limite ✅</div>'; return; } const by = groupByManager(exceeding, e => e.title || 'Sem função'); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += fnHeader(fn); by[fn].forEach(e => { const over = e.total > e.limit; html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + (over ? C.red : C.navy) + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span></div>'; }); }); body.innerHTML = html; }
+            // "Precisa logar" agrupado pelo CALM CODE que falta (não mais por gestor).
+            function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const byCode = {}; faltantes.forEach(({ p, falta }) => falta.forEach(code => { (byCode[code] = byCode[code] || []).push(p); })); let html = ''; Object.keys(byCode).sort((a, b) => a.localeCompare(b)).forEach(code => { html += fnHeader(code) + '<div style="font-size:11px;color:' + C.grey + ';padding:0 0 4px 8px;font-weight:700;">colocar ' + byCode[code].length + ' associado(s) neste calm code</div>'; byCode[code].forEach(p => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + '</div>'; }); }); body.innerHTML = html; }
             function renderErrado() { if (!logErrado.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém logado em General FC Training ✅</div>'; return; } const by = groupByManager(logErrado, e => e.manager); let html = '<div style="font-size:12px;color:' + C.grey + ';margin-bottom:6px;">Não deveriam estar logados em General FC Training nos Dias 2/3:</div>'; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + (e.total || 0).toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.title) + ')</span></div>'; }); }); body.innerHTML = html; }
             function renderTab() { if (activeTab === 'hora') renderHora(); else if (activeTab === 'errado') renderErrado(); else renderLog(); }
             function setActive(which) { activeTab = which; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabErrado.style.cssText = tabBase + (which === 'errado' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
@@ -2679,23 +2658,7 @@
             // (Os dados de cada uma seguem as regras por dia; fora do Onboarding fica só "Acima em hora".)
             tabs.appendChild(tabHora); if (isDay1() || isDay2or3()) { tabs.appendChild(tabLog); tabs.appendChild(tabErrado); }
             ov.appendChild(head);
-            // Filtro de janela SELECIONÁVEL: só na página fixa do FCLM (functionRollup).
-            // No fluxo Onboarding (fora do FCLM) a janela é automática pelo turno.
-            if (onFclmReport()) {
-                const fRow = document.createElement('div');
-                fRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-shrink:0;padding:8px 14px;background:#fff;border-bottom:1px solid ' + C.border + ';';
-                const selMode = document.createElement('select');
-                selMode.style.cssText = 'flex:1;padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;cursor:pointer;';
-                [['day', '☀️ Dia (05:30–18:00)'], ['night', '🌙 Noite (18:00–05:30)'], ['d6to5', '🕕 (D-1)06:00–05:00 '], ['full', '🗓️ Dia todo (00:00–00:00)']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
-                const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
-                const previewEl = document.createElement('div'); previewEl.style.cssText = 'flex-shrink:0;padding:2px 14px 8px;background:#fff;border-bottom:1px solid ' + C.border + ';font-size:11px;font-weight:700;color:' + C.blue + ';';
-                const syncPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
-                const applyFilter = () => { currentFilter = { mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }; saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
-                selMode.onchange = applyFilter; inpDate.onchange = applyFilter;
-                fRow.appendChild(selMode); fRow.appendChild(inpDate);
-                syncPreview();
-                ov.appendChild(fRow); ov.appendChild(previewEl);
-            }
+            // Sem filtro de janela: a janela é SEMPRE o intraday do turno de hoje.
             ov.appendChild(tabs); ov.appendChild(body); document.body.appendChild(ov); setActive('hora');
             lastSig = sig();
             // Ticker de 1s: mostra "atualiza a cada X · próxima em ..." e dispara o refresh no tempo.
@@ -2769,6 +2732,10 @@
         }, { once: true });
         // Esc fecha: ajuda e os overlays do Onboarding (não fecha setup nem takeover de propósito).
         window.addEventListener('keydown', function (e) {
+            // Atalho: Ctrl+Alt+H → oculta/mostra o círculo (não afeta os alertas)
+            if (e.ctrlKey && e.altKey && !e.shiftKey && (e.key === 'h' || e.key === 'H')) {
+                e.preventDefault(); e.stopPropagation(); toggleFabHidden(); return;
+            }
             if (e.key !== 'Escape') return;
             if (helpEl) { toggleHelp(); return; }
             if (radialEl) { hideRadial(); return; }
