@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Minichecklist Learning
 // @namespace    http://tampermonkey.net/
-// @version      7.7
+// @version      7.8
 // @description  Mini-checklist flutuante do turno (Learning GRU5). Na 1ª abertura do dia pergunta o fluxo (Onboarding Dia 1/2/3, PA ou Support) e detecta o turno (day 05:30–18:00 / night 18:00–05:30), com override manual de turno. Alertas por horário do relógio (day/night); no modo Alerta trava a tela (com "Adiar 5 min") e toca bip 1 min antes. 3 formas: círculo dinâmico (%), menu de check e mensagem em tela cheia. Links viram botões ao lado de cada tarefa. Quando o fluxo for Onboarding (ou na página do functionRollup do FCLM), mostra o Onboarding/Learning Hours (barra + dashboard + CSV) puxando TODOS os processos do FCLM (como o Learning Hours), com abas por processo, aba de Horas totais e Ajuste de Badge. A janela é SEMPRE o intraday do turno de hoje (sem filtro selecionável). No Mais detalhes há também a aba "Precisa logar" agrupada por calm code. Estado no armazenamento do Tampermonkey (compartilhado entre sites e mantido ao fechar/abrir o Firefox). CSSOM para funcionar sob CSP restrito.
 // @author       ladislke
 // @match        *://*/*
@@ -2193,6 +2193,16 @@
         function isDay2() { return daySel() === 'onb2'; }
         function isDay3() { return daySel() === 'onb3'; }
         function isDay2or3() { const s = daySel(); return s === 'onb2' || s === 'onb3'; }
+        // Flag ONB1 manual: dá visibilidade do "Precisa logar" do Dia 1 a quem NÃO está no
+        // fluxo de Onboarding (PA, Outros, página fixa do FCLM). Persiste entre páginas.
+        const ONB1_KEY = 'fclm_onb_onb1';
+        function isOnb1Flag() { return gmGet(ONB1_KEY, '0') === '1'; }
+        function setOnb1Flag(on) { gmSet(ONB1_KEY, on ? '1' : '0'); }
+        function onb1Label() { return 'ONB1: ' + (isOnb1Flag() ? 'ON' : 'OFF'); }
+        // A regra do Dia 1 vale quando o fluxo é Dia 1 OU quando o flag ONB1 está ligado.
+        function day1RuleOn() { return isDay1() || (!isDay2() && isOnb1Flag()); }
+        // A aba "Precisa logar" aparece nos fluxos de Onboarding ou com o flag ONB1 ligado.
+        function logTabAvailable() { return isDay1() || isDay2or3() || isOnb1Flag(); }
         // General FC Training: nos Dias 2/3 ninguém deve estar logado nele (vira "Logado errado").
         function isGeneralFcTraining(t) { const c = cfgOf(t); return !!(c && c.name === 'General FC Training'); }
         // Títulos da comparação "Precisa logar em outro" — APENAS os calm codes do
@@ -2207,12 +2217,13 @@
         //   Dia 2 → quem está logado em Learning mas NÃO está em nenhum calm code "* Training"
         //           (General FC Training NÃO conta como Training válido — é "logado errado").
         function computeFaltantes(r) {
-            if (isDay1()) {
+            if (day1RuleOn()) {
                 // Base: quem está logado em General FC Training. Compara com os OUTROS 2 calm codes
                 // de On Boarding (FC Safety Tour e Safety School) para ver quem precisa logar.
-                const otherNames = TRAININGS.filter(c => c.proc === 'onb' && c.name !== 'General FC Training').map(c => c.name);
+                // Só FC Safety Tour e Safety School (Ambassador Coaching e outras funções ficam fora).
+                const otherNames = ['FC Safety Tour', 'Safety School'];
                 const haveNames = {};   // personKey -> Set de calm codes (FC Safety Tour / Safety School) em que está
-                r.trainings.forEach(t => { const c = cfgOf(t); if (c && c.proc === 'onb' && c.name !== 'General FC Training') t.people.forEach(p => { const k = personKey(p); (haveNames[k] = haveNames[k] || new Set()).add(c.name); }); });
+                r.trainings.forEach(t => { const c = cfgOf(t); if (c && otherNames.indexOf(c.name) >= 0) t.people.forEach(p => { const k = personKey(p); (haveNames[k] = haveNames[k] || new Set()).add(c.name); }); });
                 const out = [], seen = new Set();
                 r.trainings.filter(t => isGeneralFcTraining(t)).forEach(t => t.people.forEach(p => {
                     const k = personKey(p); if (seen.has(k)) return; seen.add(k);
@@ -2447,9 +2458,9 @@
             let html = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px;">'
                 + '<div style="background:linear-gradient(135deg,#E88B00,#8a5300);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">🔁 Precisa logar</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + list.length + '</div></div>'
                 + '<div style="background:linear-gradient(135deg,#37475A,#1a2530);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Calm codes</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + codes.length + '</div></div></div>';
-            html += '<div style="font-size:12px;font-weight:700;color:' + C.grey + ';margin-bottom:10px;">' + (isDay1()
-                ? 'Dia 1: quem está em General FC Training e falta em FC Safety Tour / Safety School.'
-                : (isDay2() ? 'Dia 2: quem está em Learning e não está em nenhum calm code de Training.' : 'Disponível nos fluxos de Onboarding Dia 1 e Dia 2.')) + '</div>';
+            html += '<div style="font-size:12px;font-weight:700;color:' + C.grey + ';margin-bottom:10px;">' + (day1RuleOn()
+                ? ('Regra do Dia 1: quem está em General FC Training e falta em FC Safety Tour / Safety School.' + (!isDay1() ? ' <b>(via flag ONB1)</b>' : ''))
+                : (isDay2() ? 'Dia 2: quem está em Learning e não está em nenhum calm code de Training.' : 'Ligue o <b>ONB1</b> para ver a regra do Dia 1.')) + '</div>';
             html += '<div style="background:rgba(232,139,0,0.06);border:1px solid ' + C.amber + ';border-radius:12px;padding:14px 16px;">';
             if (codes.length) {
                 codes.forEach(code => {
@@ -2511,7 +2522,7 @@
             const procTabs = document.createElement('div'); procTabs.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
             const procBtns = PROCESSES.map(pr => { const b = document.createElement('button'); b.dataset.proc = pr.key; b.onclick = () => { currentProc = pr.key; renderD(); }; procTabs.appendChild(b); return b; });
             function procHasData(key) { return key === 'log' ? computeFaltantes(currentR).length > 0 : key === 'badge' ? badgeEntries(currentR).length > 0 : key === 'errado' ? logadoErrado(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
-            function styleProcBtns() { procBtns.forEach(b => { const pr = procObj(b.dataset.proc); const on = b.dataset.proc === currentProc; const hasData = procHasData(b.dataset.proc); b.innerHTML = esc(pr.name); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + C.dark + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')); }); }
+            function styleProcBtns() { procBtns.forEach(b => { const key = b.dataset.proc; const pr = procObj(key); const on = key === currentProc; const hasData = procHasData(key); b.innerHTML = esc(pr.name); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + C.dark + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')) + (key === 'log' && !logTabAvailable() ? 'display:none;' : '') + (key === 'errado' && !(isDay1() || isDay2or3()) ? 'display:none;' : ''); }); }
             const btnLimits = document.createElement('button'); btnLimits.innerHTML = '⏱️ Ver limites de horas';
             btnLimits.title = 'Apenas visualização dos limites de horas (não é possível alterar)';
             btnLimits.style.cssText = 'background:' + C.blue + ';color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:700;font-size:13px;';
@@ -2529,9 +2540,17 @@
                 h += '</div>'; pbody.innerHTML = h; pbox.appendChild(pbody);
                 document.body.appendChild(lmodal);
             }
+            // Flag ONB1 (discreto): habilita o "Precisa logar" do Dia 1 fora do fluxo de Onboarding.
+            const btnOnb1d = document.createElement('button');
+            btnOnb1d.title = 'Onboarding Dia 1: mostra quem está em General FC Training e falta em FC Safety Tour / Safety School';
+            const styleOnb1d = () => { const on = isOnb1Flag(); btnOnb1d.textContent = onb1Label(); btnOnb1d.style.cssText = 'background:transparent;color:' + (on ? C.amber : C.grey) + ';border:1px solid ' + (on ? C.amber : '#CDD4DA') + ';border-radius:6px;padding:5px 9px;cursor:pointer;font-weight:700;font-size:11px;'; };
+            styleOnb1d();
+            btnOnb1d.onclick = () => { setOnb1Flag(!isOnb1Flag()); styleOnb1d(); renderD(); };
+            filterBar.appendChild(btnOnb1d);
             filterBar.appendChild(btnLimits);
             const content = document.createElement('div'); body.appendChild(filterBar); body.appendChild(procTabs); body.appendChild(content); box.appendChild(body);
             function renderD() {
+                if (currentProc === 'log' && !logTabAvailable()) currentProc = PROCESSES[0].key;
                 currentR = filterByManager(r, sel.value); styleProcBtns();
                 btnLimits.style.display = (currentProc === 'log') ? 'none' : '';   // limites não se aplicam aqui
                 if (currentProc === 'log') { viewR = currentR; content.innerHTML = buildLogHTML(currentR); }
@@ -2618,7 +2637,13 @@
             btnRefresh.onclick = () => doRefresh(true);
             const btnDet = document.createElement('button'); btnDet.innerHTML = '🔎 Mais detalhes'; btnDet.style.cssText = 'background:' + C.accent + ';color:#232F3E;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:12px;'; btnDet.onclick = () => { ov.remove(); showDashboard(curR); };
             const x = document.createElement('button'); x.textContent = '✖'; x.style.cssText = 'background:' + C.red + ';color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;'; x.onclick = () => ov.remove();
-            headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
+            // Flag ONB1 (discreto): liga a visão "Precisa logar" do Dia 1 fora do fluxo de Onboarding.
+            const btnOnb1 = document.createElement('button');
+            btnOnb1.title = 'Onboarding Dia 1: mostra quem está em General FC Training e falta em FC Safety Tour / Safety School';
+            const styleOnb1 = () => { const on = isOnb1Flag(); btnOnb1.textContent = onb1Label(); btnOnb1.style.cssText = 'background:transparent;color:' + (on ? C.gold : '#8fa3b8') + ';border:1px solid ' + (on ? C.gold : 'rgba(255,255,255,.28)') + ';border-radius:5px;padding:3px 7px;cursor:pointer;font-weight:700;font-size:10px;'; };
+            styleOnb1();
+            btnOnb1.onclick = () => { setOnb1Flag(!isOnb1Flag()); styleOnb1(); recompute(); updateTabLabels(); setActive(!logTabAvailable() && activeTab === 'log' ? 'hora' : activeTab); };
+            headBtns.appendChild(btnOnb1); headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
             const tabs = document.createElement('div'); tabs.style.cssText = 'display:flex;flex-shrink:0;border-bottom:1px solid ' + C.border + ';background:#fff;';
             const tabHora = document.createElement('button'); const tabLog = document.createElement('button'); const tabErrado = document.createElement('button');
             const tabBase = 'flex:1;border:none;padding:10px 8px;cursor:pointer;font-weight:700;font-size:13px;font-family:\'Amazon Ember\',Arial,sans-serif;background:#fff;';
@@ -2633,7 +2658,9 @@
             function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const byCode = {}; faltantes.forEach(({ p, falta }) => falta.forEach(code => { (byCode[code] = byCode[code] || []).push(p); })); let html = ''; Object.keys(byCode).sort((a, b) => a.localeCompare(b)).forEach(code => { html += fnHeader(code) + '<div style="font-size:11px;color:' + C.grey + ';padding:0 0 4px 8px;font-weight:700;">colocar ' + byCode[code].length + ' associado(s) neste calm code</div>'; byCode[code].forEach(p => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + '</div>'; }); }); body.innerHTML = html; }
             function renderErrado() { if (!logErrado.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Ninguém logado em General FC Training ✅</div>'; return; } const by = groupByManager(logErrado, e => e.manager); let html = '<div style="font-size:12px;color:' + C.grey + ';margin-bottom:6px;">Não deveriam estar logados em General FC Training nos Dias 2/3:</div>'; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { html += mgrHeader(mgr); by[mgr].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + (e.total || 0).toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.title) + ')</span></div>'; }); }); body.innerHTML = html; }
             function renderTab() { if (activeTab === 'hora') renderHora(); else if (activeTab === 'errado') renderErrado(); else renderLog(); }
-            function setActive(which) { activeTab = which; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabErrado.style.cssText = tabBase + (which === 'errado' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
+            // Visibilidade das abas extras (chamada após qualquer troca de estilo/flag).
+            function syncTabsVis() { tabLog.style.display = logTabAvailable() ? '' : 'none'; tabErrado.style.display = (isDay1() || isDay2or3()) ? '' : 'none'; }
+            function setActive(which) { if (which === 'log' && !logTabAvailable()) which = 'hora'; activeTab = which; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabErrado.style.cssText = tabBase + (which === 'errado' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); syncTabsVis(); renderTab(); }
             // Re-busca o relatório e atualiza os números sem fechar o painel.
             function doRefresh(manual) {
                 if (refreshing || !document.body.contains(ov)) return;
@@ -2656,7 +2683,10 @@
             tabHora.onclick = () => setActive('hora'); tabLog.onclick = () => setActive('log'); tabErrado.onclick = () => setActive('errado');
             // Durante o Onboarding (Dia 1/2/3) mostra as TRÊS abas: Acima em hora, Precisa logar e Logado errado.
             // (Os dados de cada uma seguem as regras por dia; fora do Onboarding fica só "Acima em hora".)
-            tabs.appendChild(tabHora); if (isDay1() || isDay2or3()) { tabs.appendChild(tabLog); tabs.appendChild(tabErrado); }
+            // "Precisa logar" aparece nos fluxos de Onboarding OU com o flag ONB1 ligado (ex.: PA).
+            // "Logado errado" segue só nos fluxos de Onboarding.
+            tabs.appendChild(tabHora); tabs.appendChild(tabLog); tabs.appendChild(tabErrado);
+            syncTabsVis();
             ov.appendChild(head);
             // Sem filtro de janela: a janela é SEMPRE o intraday do turno de hoje.
             ov.appendChild(tabs); ov.appendChild(body); document.body.appendChild(ov); setActive('hora');
