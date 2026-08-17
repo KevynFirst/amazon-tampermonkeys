@@ -31,7 +31,7 @@
 //        preenche o campo e mostra o resultado/erro na tela (sem precisar do
 //        console). Funciona mesmo sem o hash, usando o audit_type_id da URL.
 // v1.5 — Rate esperado automático: busca o "Plan Rate" no FCLM Portal
-//        (processPathRollup do GRU5) a partir do processo auditado e preenche
+//        (processPathRollup) a partir do processo auditado e preenche
 //        o campo "Rate esperado no processo:". Processos sem rollup (CC, SBC,
 //        SRC, Receive Dock) ficam em branco.
 // v1.4 — Preenchimento automático: ao abrir pelo link do Acompanhamento LC
@@ -383,7 +383,7 @@
         var now = new Date();
         var pad = function (n) { return String(n).padStart(2, '0'); };
         var enc = function (d) { return d.getFullYear() + '%2F' + pad(d.getMonth() + 1) + '%2F' + pad(d.getDate()); };
-        return FCLM_BASE + '?reportFormat=HTML&warehouseId=GRU5' +
+        return FCLM_BASE + '?reportFormat=HTML' +
             '&spanType=Day&startDateDay=' + enc(now);
     }
 
