@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Learning Hours - FCLM Overlay
 // @namespace    http://tampermonkey.net/
-// @version      4.0
-// @description  Overlay fixo na página functionRollup do FCLM (GRU5): mostra as horas de Learning/Onboarding por associado — quem está acima do limite de horas e quem precisa ser logado em outra função. Filtro por horas, por gestor, exportação CSV e envio ao Slack. Versão só-visibilidade (sem checklist), para quem não é do time de Learning.
+// @version      4.6
+// @description  Overlay fixo na página functionRollup do FCLM (GRU5): mostra as horas de Learning/Onboarding por associado — quem está acima do limite de horas e quem precisa ser logado em outro calm code. Filtro de janela por Day, Week (nº da semana, Dom–Sáb) e Intraday (Dia/Noite/06→05), filtro por horas e por gestor, aba "Precisa logar" agrupada por calm code com flag "Onb Dia 1", exportação CSV e envio ao Slack. Versão só-visibilidade (sem checklist), para quem não é do time de Learning.
 // @author       ladislke
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
 // @match        https://fclm-portal.amazon.com/reports/functionRollup*
@@ -13,6 +13,8 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @updateURL    https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/Learning%20Hours%20-%20FCLM%20Overlay-4.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/Learning%20Hours%20-%20FCLM%20Overlay-4.0.user.js
 // ==/UserScript==
 //
 // OBJETIVO: dar visibilidade das horas de Learning/Onboarding a QUALQUER pessoa
@@ -104,15 +106,30 @@
     function ymdDash(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
     function loadFilter() { try { const s = gmGet(FILTER_KEY, ''); if (s) return JSON.parse(s); } catch (e) {} return { mode: 'day', date: ymdDash(new Date()) }; }
     function saveFilter(f) { gmSet(FILTER_KEY, JSON.stringify(f)); }
+    // ── Semana Amazon: começa no DOMINGO e termina no SÁBADO ─────────────
+    function weekOneSunday(year) { const jan1 = new Date(year, 0, 1); const s = new Date(jan1); s.setDate(jan1.getDate() - jan1.getDay()); return s; }
+    function sundayOfWeek(year, week) { const s = weekOneSunday(year); s.setDate(s.getDate() + (Math.max(1, week || 1) - 1) * 7); return s; }
+    function sundayOf(d) { const s = new Date(d); s.setDate(d.getDate() - d.getDay()); return s; }
+    function weekNumberOf(d) { const w1 = weekOneSunday(d.getFullYear()); const sun = sundayOf(d); return Math.round((sun - w1) / (7 * 86400000)) + 1; }
     let currentFilter = loadFilter();
-    const modeLabel = m => m === 'night' ? '🌙 Noite' : (m === 'full' ? '🗓️ Dia todo' : (m === 'd6to5' ? '🕕 06→05' : '☀️ Dia'));
+    // Ao carregar o site, a data SEMPRE começa em HOJE (mantém o modo salvo).
+    // Assim os reports automáticos sempre trazem dados atuais, sem reabrir numa data antiga salva.
+    (function () { const t = new Date(); currentFilter.date = ymdDash(t); currentFilter.year = t.getFullYear(); currentFilter.week = weekNumberOf(t); })();
+    saveFilter(currentFilter);
+    const modeLabel = m => m === 'night' ? '🌙 Noite' : (m === 'full' ? '📅 Day' : (m === 'week' ? '🗓️ Week' : (m === 'd6to5' ? '🕕 06→05' : '☀️ Dia')));
     function buildWindowParams(f) {
         const parts = String(f.date || '').split('-').map(Number);
         const base = (parts.length === 3 && !parts.some(isNaN)) ? new Date(parts[0], parts[1] - 1, parts[2]) : new Date();
         const next = new Date(base); next.setDate(base.getDate() + 1);
         const p = new URLSearchParams();
         p.set('warehouseId', WAREHOUSE);
-        if (f.mode === 'full') {                       // Dia todo: 00:00 → 00:00 (spanType=Day)
+        if (f.mode === 'week') {                       // Semana: Domingo 00:00 → Domingo seguinte (spanType=Week)
+            const sun = sundayOfWeek(f.year, f.week);
+            const nextSun = new Date(sun); nextSun.setDate(sun.getDate() + 7);
+            p.set('spanType', 'Week');
+            p.set('startDate', ymdDash(sun) + 'T00:00:00.000');
+            p.set('endDate', ymdDash(nextSun) + 'T00:00:00.000');
+        } else if (f.mode === 'full') {                // Dia inteiro: 00:00 → 00:00 (spanType=Day)
             p.set('spanType', 'Day');
             p.set('startDate', ymdDash(base) + 'T00:00:00.000');
             p.set('endDate', ymdDash(next) + 'T00:00:00.000');
@@ -140,6 +157,11 @@
         const prev = new Date(base); prev.setDate(base.getDate() - 1);
         const dm = d => pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1);
         const hm = (h, m) => pad2(h) + ':' + pad2(m);
+        if (f.mode === 'week') {
+            const sun = sundayOfWeek(f.year, f.week);
+            const sat = new Date(sun); sat.setDate(sun.getDate() + 6);
+            return 'Week ' + (f.week || 1) + '/' + (f.year || sun.getFullYear()) + ' · ' + dm(sun) + ' (dom) → ' + dm(sat) + ' (sáb)';
+        }
         let sD, sH, sM, eD, eH, eM;
         if (f.mode === 'full') { sD = base; sH = 0; sM = 0; eD = next; eH = 0; eM = 0; }
         else if (f.mode === 'night') { sD = base; sH = 18; sM = 0; eD = next; eH = 5; eM = 30; }
@@ -388,10 +410,41 @@
         fr.manager = r.manager;
         return fr;
     }
-    function compareTitles(r) {
-        const learn = new Set(r.trainings.filter(t => t.fnId === LEARN_FN || isLearning(t)).map(t => t.title));
-        return r.titles.filter(tt => !learn.has(tt));
+    // ── Flag "Onb Dia 1" + "Precisa logar" (calm codes de On Boarding) ────
+    const ONB1_KEY = 'lh_onb1';
+    function isOnb1() { return gmGet(ONB1_KEY, '0') === '1'; }
+    function setOnb1(on) { gmSet(ONB1_KEY, on ? '1' : '0'); }
+    function onb1Label() { return 'ONB1: ' + (isOnb1() ? 'ON' : 'OFF'); }
+    // Calm codes de On Boarding considerados no "Precisa logar" — SOMENTE estes 3.
+    // Horas de qualquer outra função (Learning, Ambassador, Pick/Pack/etc.) são ignoradas aqui.
+    const ONB_CORE_NAMES = ['FC Safety Tour', 'General FC Training', 'Safety School'];
+    function onbCoreCfg(t) { const c = cfgOf(t); return (c && c.proc === 'onb' && ONB_CORE_NAMES.indexOf(c.name) >= 0) ? c : null; }
+    // "Precisa logar" — só existe com o flag ONB1 ON (Onboarding Dia 1).
+    // Referência: quem está logado no General FC Training. Falta = FC Safety Tour / Safety School.
+    // Ambassador Coaching e qualquer outra função ficam de fora.
+    const ONB_TARGET_NAMES = ONB_CORE_NAMES.filter(n => n !== 'General FC Training');
+    function computeFaltantes(r) {
+        if (!isOnb1()) return [];   // ONB1 OFF → nada de "Precisa logar"
+        const map = {};             // personKey -> { p, have:Set dos calm codes de On Boarding }
+        r.trainings.forEach(t => {
+            const c = onbCoreCfg(t); if (!c) return;
+            t.people.forEach(p => {
+                const k = personKey(p);
+                if (!map[k]) map[k] = { p: { name: p.name, id: p.id, manager: p.manager, link: p.link }, have: new Set() };
+                map[k].have.add(c.name);
+            });
+        });
+        const out = [];
+        Object.keys(map).forEach(k => {
+            const e = map[k];
+            if (!e.have.has('General FC Training')) return;   // base = General FC Training
+            const falta = ONB_TARGET_NAMES.filter(n => !e.have.has(n));
+            if (falta.length) out.push({ p: e.p, falta: falta });
+        });
+        return out.sort((a, b) => a.p.name.localeCompare(b.p.name));
     }
+    // Agrupa "Precisa logar" por CALM CODE (função) → { calmCode: [pessoas] }.
+    function faltantesByCalm(list) { const by = {}; list.forEach(({ p, falta }) => falta.forEach(t => { (by[t] = by[t] || []).push(p); })); return by; }
 
     // ── Exportação CSV (1 linha por associado) ───────────────────────────
     function personKey(p) { return p.id || p.name.toLowerCase(); }
@@ -430,56 +483,47 @@
     // ── Envio para o Slack ───────────────────────────────────────────────
     const SLACK_KEY = 'lh_slack_webhook';
     function slackName(name, link) { return link ? '<' + link + '|' + name + '>' : '*' + name + '*'; }
-    function buildSlackText(r) {
-        // SEMPRE só quem passou do limite (ignora o toggle "mostrar todos"), subdividido por processo.
-        const over = [];
-        r.trainings.forEach(t => {
-            const lim = getLimit(t); const pr = procOf(t);
-            t.people.forEach(p => { if (p.total != null && p.total > lim) over.push({ name: p.name, link: p.link, manager: p.manager, title: t.title, total: p.total, limit: lim, procName: pr.name }); });
-        });
-        const now = new Date();
-        const dLbl = String(now.getDate()).padStart(2, '0') + '/' + String(now.getMonth() + 1).padStart(2, '0') + '/' + now.getFullYear();
-        let msg = ':bar_chart: *Learning Hours* — ' + dLbl + '\n\n';
-        msg += ':alarm_clock: *Acima do limite (' + over.length + ')*\n';
-        if (over.length) {
-            const procOrder = PROCESSES.map(p => p.name);
-            const byProc = groupByManager(over, e => e.procName);
-            Object.keys(byProc).sort((a, b) => procOrder.indexOf(a) - procOrder.indexOf(b)).forEach(pn => {
-                msg += '> *' + pn + '*\n';
-                const byT = groupByManager(byProc[pn], e => e.title || 'Sem função');
-                Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(tn => {
-                    const lim = byT[tn][0] && byT[tn][0].limit;
-                    msg += '>  _' + tn + '_ (limite ' + lim + 'h)\n';
-                    byT[tn].forEach(e => { msg += '>   • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; });
-                });
-            });
-        } else { msg += '> Ninguém acima do limite :white_check_mark:\n'; }
-        // Ajuste de Badge (quem passou de badgeLimit()h), subdividido por processo.
-        const badges = badgeEntries(r);
-        msg += '\n:identification_card: *Ajuste de Badge — acima de ' + badgeLimit() + 'h (' + badges.length + ')*\n';
-        if (badges.length) {
-            const order = PROCESSES.map(p => p.name);
-            const byP = groupByManager(badges, e => e.procName || 'Sem processo');
-            Object.keys(byP).sort((a, b) => order.indexOf(a) - order.indexOf(b)).forEach(pn => {
-                msg += '> *' + pn + '*\n';
-                byP[pn].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h* _' + e.title + '_' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; });
-            });
-        } else { msg += '> Ninguém acima de ' + badgeLimit() + 'h :white_check_mark:\n'; }
-        return msg;
+    // Categorias "amigáveis" p/ dividir as horas.
+    function slackCat(title) {
+        if (/general fc training/i.test(title)) return 'Horas de onboarding';
+        if (/fc safety tour/i.test(title)) return 'Tour';
+        if (/ambassador/i.test(title)) return 'Embaixadores';
+        if (/training/i.test(title)) return 'Em treinamento';
+        return title;
     }
-    function _unusedPrecisaLogar(r) {
-        const cmpTitles = compareTitles(r);
-        const faltantes = r.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
-        let msg = '';
-        msg += '\n:repeat: *Precisa logar em outro (' + faltantes.length + ')*\n';
-        if (faltantes.length) {
-            const byT = {};
-            faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); }));
-            Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => {
-                msg += '> *' + t + '*\n';
-                byT[t].forEach(p => { msg += '>  • ' + slackName(p.name, p.link) + (p.manager ? ' (' + p.manager + ')' : '') + '\n'; });
-            });
-        } else { msg += '> Todos presentes em todos :white_check_mark:\n'; }
+    function slackObs() {
+        const lim = name => { const c = TRAININGS.find(x => x.name === name); return c ? trainingLimit(c) : '?'; };
+        const trnCfg = TRAININGS.find(c => c.proc !== 'onb' && /training/i.test(c.name));
+        const ambCfg = TRAININGS.find(c => /ambassador/i.test(c.name));
+        const parts = [];
+        parts.push('Horas de onboarding (General FC Training) = ' + lim('General FC Training') + 'h');
+        parts.push('Tour (FC Safety Tour) = ' + lim('FC Safety Tour') + 'h');
+        if (trnCfg) parts.push('Em treinamento (todos com Training) = ' + trainingLimit(trnCfg) + 'h');
+        if (ambCfg) parts.push('Embaixadores (todos com Ambassador) = ' + trainingLimit(ambCfg) + 'h');
+        return parts.join(' · ');
+    }
+    function buildSlackText(r) {
+        // Acima do limite: SEMPRE só quem passou (ignora "mostrar todos").
+        const exceeding = [];
+        r.trainings.forEach(t => { const lim = getLimit(t); t.people.forEach(p => { if (p.total != null && p.total > lim) exceeding.push({ name: p.name, id: p.id, manager: p.manager, link: p.link, title: t.title, total: p.total, limit: lim }); }); });
+        exceeding.sort((a, b) => (b.total - b.limit) - (a.total - a.limit));
+        const badges = badgeEntries(r);
+        // Cabeçalho reflete a JANELA SELECIONADA no filtro (não a hora atual).
+        let msg = modeLabel(currentFilter.mode) + ' *Learning Hours*\n:calendar: _' + windowPreviewText(currentFilter) + '_\n';
+        // Cada seção só aparece quando TEM dados.
+        if (exceeding.length) {
+            msg += '\n⏰ *Acima da hora limite (' + exceeding.length + ')*\n';
+            const CAT_ORDER = ['Horas de onboarding', 'Tour', 'Em treinamento', 'Embaixadores'];
+            const by = groupByManager(exceeding, e => slackCat(e.title));
+            const cats = Object.keys(by).sort((a, b) => { const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b); });
+            cats.forEach(cat => { msg += '> *' + cat + '*\n'; by[cat].sort((a, b) => (b.total || 0) - (a.total || 0)).forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + e.total.toFixed(2) + 'h*' + (e.manager ? ' (' + e.manager + ')' : '') + '\n'; }); });
+        }
+        if (badges.length) {
+            msg += '\n🪪 *Ajuste de Badge (' + badges.length + ')*\n';
+            const by = groupByManager(badges, e => e.manager);
+            Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(mgr => { msg += '> *' + mgr + '*\n'; by[mgr].forEach(e => { msg += '>  • ' + slackName(e.name, e.link) + ' — *' + (e.total || 0).toFixed(2) + 'h* (' + e.title + ')\n'; }); });
+        }
+        msg += '\n_Obs.: ' + slackObs() + '_';
         return msg;
     }
     function sendSlack(r) {
@@ -556,7 +600,7 @@
         fr.trainings.forEach((t, i) => { html += '<div class="lh-train-card" data-idx="' + i + '" style="background:#fff;border:1px solid ' + C.border + ';border-left:4px solid ' + C.accent + ';border-radius:10px;padding:14px 16px;cursor:pointer;box-shadow:0 2px 8px rgba(35,47,62,0.06);transition:all .15s ease;"><div style="font-size:15px;font-weight:700;color:' + C.dark + ';">' + esc(t.title) + '</div><div style="font-size:26px;font-weight:800;color:' + C.blue + ';margin-top:4px;">' + t.people.length + ' <span style="font-size:13px;color:' + C.grey + ';font-weight:600;">associado(s)</span></div></div>'; });
         html += '</div>';
         html += '<div style="background:rgba(204,0,0,0.06);border:1px solid ' + C.red + ';border-radius:12px;padding:14px 16px;margin-bottom:18px;"><div style="font-size:15px;font-weight:800;color:' + C.red + ';margin-bottom:8px;">' + (limitByHours ? '⏰' : '📋') + ' ' + esc(listTitle()) + ' (' + exceeding.length + ')' + (limitByHours ? ' <span style="font-weight:600;color:' + C.grey + ';font-size:12px;">— ' + esc(fr.trainings.map(t => t.title + ' > ' + getLimit(t) + 'h').join(' · ')) + '</span>' : '') + '</div>';
-        if (exceeding.length) { const hClr = limitByHours ? C.red : C.blueHours; const by = groupByManager(exceeding, e => e.title || 'Sem função'); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>'; by[fn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.manager) + ')</span>' : '') + badgeTag(e.total) + '</div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
+        if (exceeding.length) { const hClr = limitByHours ? C.red : C.blueHours; const by = groupByManager(exceeding, e => e.title || 'Sem função'); Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';">🎓 ' + esc(fn) + '</div>'; by[fn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + badgeTag(e.total) + '</div>'; }); }); } else { html += '<div style="font-size:14px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; }
         html += '</div>';
         return html;
     }
@@ -573,6 +617,47 @@
                 by[pn].forEach(e => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(e.name, e.link) + ' — <span style="color:' + C.red + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span> <span style="color:' + C.grey + ';font-size:13px;">(' + esc(e.title) + (e.manager ? ' · ' + esc(e.manager) : '') + ')</span></div>'; });
             });
         } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Ninguém acima de ' + badgeLimit() + 'h ✅</div>'; }
+        html += '</div>';
+        return html;
+    }
+    // Filtro de janela (Day / Week / Intraday) reutilizável — altera currentFilter e chama onChange().
+    function makeWindowFilter(onChange) {
+        const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:14px;padding:10px 12px;background:#fff;border:1px solid ' + C.border + ';border-radius:10px;';
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
+        const selMode = document.createElement('select'); selMode.style.cssText = 'padding:7px 10px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;cursor:pointer;font-weight:700;color:' + C.dark + ';background:#fff;';
+        [['full', '📅 Day (dia inteiro)'], ['week', '🗓️ Week (semana)'], ['day', '☀️ Intraday Dia (05:30–18:00)'], ['night', '🌙 Intraday Noite (18:00–05:30)'], ['d6to5', '🕕 Intraday (D-1)06:00–05:00']].forEach(function (o) { const op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; if (currentFilter.mode === o[0]) op.selected = true; selMode.appendChild(op); });
+        const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:7px 10px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;';
+        const weekWrap = document.createElement('span'); weekWrap.style.cssText = 'display:flex;gap:6px;align-items:center;';
+        const wLbl = document.createElement('span'); wLbl.textContent = 'Wk'; wLbl.style.cssText = 'font-size:12px;font-weight:800;color:' + C.grey + ';';
+        const inpWeek = document.createElement('input'); inpWeek.type = 'number'; inpWeek.min = '1'; inpWeek.max = '53'; inpWeek.value = currentFilter.week; inpWeek.title = 'Número da semana (Dom–Sáb)'; inpWeek.style.cssText = 'width:60px;padding:7px 8px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;';
+        const inpYear = document.createElement('input'); inpYear.type = 'number'; inpYear.min = '2020'; inpYear.max = '2100'; inpYear.value = currentFilter.year; inpYear.title = 'Ano da semana'; inpYear.style.cssText = 'width:72px;padding:7px 8px;border:1px solid #CDD4DA;border-radius:8px;font-size:13px;';
+        weekWrap.appendChild(wLbl); weekWrap.appendChild(inpWeek); weekWrap.appendChild(inpYear);
+        const preview = document.createElement('div'); preview.style.cssText = 'font-size:11px;font-weight:700;color:' + C.blue + ';';
+        function readFilter() { if (selMode.value === 'week') return { mode: 'week', date: currentFilter.date, week: Math.max(1, parseInt(inpWeek.value, 10) || 1), year: parseInt(inpYear.value, 10) || new Date().getFullYear() }; return { mode: selMode.value, date: inpDate.value || ymdDash(new Date()), week: currentFilter.week, year: currentFilter.year }; }
+        function sync() { const wk = selMode.value === 'week'; inpDate.style.display = wk ? 'none' : ''; weekWrap.style.display = wk ? 'flex' : 'none'; preview.textContent = '🗓️ ' + windowPreviewText(readFilter()) + ' — muda a janela e re-busca os dados'; }
+        const apply = () => { currentFilter = readFilter(); saveFilter(currentFilter); sync(); onChange(); };
+        selMode.onchange = apply; inpDate.onchange = apply; inpWeek.onchange = apply; inpYear.onchange = apply;
+        row.appendChild(selMode); row.appendChild(inpDate); row.appendChild(weekWrap);
+        wrap.appendChild(row); wrap.appendChild(preview); sync();
+        return wrap;
+    }
+
+    // "Precisa logar" no Mais detalhes — agrupado por CALM CODE de On Boarding.
+    function buildLogHTML(fr) {
+        const list = computeFaltantes(fr);
+        const by = faltantesByCalm(list);
+        const codes = Object.keys(by).sort((a, b) => a.localeCompare(b));
+        let html = '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px;">'
+            + '<div style="background:linear-gradient(135deg,#E88B00,#8a5300);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">🔁 Precisa logar</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + list.length + '</div></div>'
+            + '<div style="background:linear-gradient(135deg,#37475A,#1a2530);color:#fff;padding:18px 22px;border-radius:12px;text-align:center;"><div style="font-size:12px;text-transform:uppercase;opacity:.85;letter-spacing:.08em;">Calm codes</div><div style="font-size:40px;font-weight:800;margin-top:4px;">' + codes.length + '</div></div></div>';
+        html += '<div style="font-size:12px;font-weight:700;color:' + C.grey + ';margin-bottom:10px;">Referência: quem está logado em <b>General FC Training</b>. Falta = FC Safety Tour / Safety School (Ambassador Coaching e outras funções são ignoradas). Desligue o <b>ONB1</b> para esconder esta visão.</div>';
+        html += '<div style="background:rgba(232,139,0,0.06);border:1px solid ' + C.amber + ';border-radius:12px;padding:14px 16px;">';
+        if (codes.length) {
+            codes.forEach(code => {
+                html += '<div style="margin:10px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 12px;border-radius:6px;border-left:4px solid ' + C.accent + ';"><a href="' + reportUrl(processForTitle(code)) + '" target="_blank" title="Abrir o relatório deste calm code" style="text-decoration:none;">🔗</a> ' + esc(code) + ' <span style="font-weight:600;color:' + C.gold + ';">(' + by[code].length + ')</span></div>';
+                by[code].forEach(p => { html += '<div style="font-size:15px;color:' + C.dark + ';padding:3px 0 3px 10px;">' + nameLink(p.name, p.link) + '</div>'; });
+            });
+        } else { html += '<div style="font-size:14px;color:' + C.grey + ';">Ninguém precisa ser logado ✅</div>'; }
         html += '</div>';
         return html;
     }
@@ -595,8 +680,11 @@
         const procObj = k => PROCESSES.find(p => p.key === k) || PROCESSES[0];
         const procTabs = document.createElement('div'); procTabs.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;';
         const procBtns = PROCESSES.map(pr => { const b = document.createElement('button'); b.dataset.proc = pr.key; b.onclick = () => { currentProc = pr.key; renderD(); }; procTabs.appendChild(b); return b; });
-        function procHasData(key) { return key === 'badge' ? badgeEntries(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
-        function styleProcBtns() { procBtns.forEach(b => { const pr = procObj(b.dataset.proc); const on = b.dataset.proc === currentProc; const hasData = procHasData(b.dataset.proc); b.innerHTML = '🎓 ' + esc(pr.name); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + C.dark + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')); }); }
+        // Aba extra: "Precisa logar" (calm codes de On Boarding).
+        const btnLogTab = document.createElement('button'); btnLogTab.dataset.proc = 'log'; btnLogTab.onclick = () => { currentProc = 'log'; renderD(); }; procTabs.appendChild(btnLogTab); procBtns.push(btnLogTab);
+        function tabLabel(key) { return key === 'log' ? '🔁 Precisa logar' : ('🎓 ' + esc(procObj(key).name)); }
+        function procHasData(key) { if (key === 'log') return computeFaltantes(currentR).length > 0; return key === 'badge' ? badgeEntries(currentR).length > 0 : currentR.trainings.some(t => procOf(t).key === key && t.people.length > 0); }
+        function styleProcBtns() { procBtns.forEach(b => { const key = b.dataset.proc; const on = key === currentProc; const hasData = procHasData(key); b.innerHTML = tabLabel(key); b.style.cssText = 'border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-weight:700;font-size:13px;transition:all .15s ease;' + (on ? 'background:' + (key === 'log' ? C.amber : C.dark) + ';color:#fff;box-shadow:0 3px 10px rgba(35,47,62,0.3);' : (hasData ? 'background:#fff;color:' + C.dark + ';border:1px solid #CDD4DA;' : 'background:#F2F4F6;color:#B5BDC5;border:1px solid #E6EAEE;opacity:.55;')) + (key === 'log' && !isOnb1() ? 'display:none;' : ''); }); }
         // Editor de limites POR TREINAMENTO do processo ativo (decidido aqui, salvo e persistente).
         // Botão que abre a telinha para alterar os limites de horas do processo ativo.
         const btnLimits = document.createElement('button'); btnLimits.innerHTML = '⏱️ Alterar limites de horas';
@@ -625,11 +713,40 @@
             };
             pfoot.appendChild(bSave); pbox.appendChild(pfoot); document.body.appendChild(modal);
         }
+        // Flag "Onb Dia 1" — muda a regra do "Precisa logar" (aparece só nessa aba).
+        const btnOnb1d = document.createElement('button');
+        btnOnb1d.title = 'Onboarding Dia 1: compara quem está em General FC Training com FC Safety Tour / Safety School';
+        const styleOnb1d = () => { const on = isOnb1(); btnOnb1d.textContent = onb1Label(); btnOnb1d.style.cssText = 'background:transparent;color:' + (on ? C.amber : C.grey) + ';border:1px solid ' + (on ? C.amber : '#CDD4DA') + ';border-radius:6px;padding:5px 9px;cursor:pointer;font-weight:700;font-size:11px;'; };
+        styleOnb1d();
+        btnOnb1d.onclick = () => { setOnb1(!isOnb1()); styleOnb1d(); renderD(); };
+        filterBar.appendChild(btnOnb1d);
         filterBar.appendChild(btnLimits);   // ao lado do "Mostrar todos"
-        const content = document.createElement('div'); body.appendChild(filterBar); body.appendChild(procTabs); body.appendChild(content); box.appendChild(body);
+        const content = document.createElement('div');
+        const winFilter = makeWindowFilter(() => reloadDash());   // Day / Week / Intraday, com re-busca
+        body.appendChild(winFilter); body.appendChild(filterBar); body.appendChild(procTabs); body.appendChild(content); box.appendChild(body);
+        // Repopula os gestores mantendo a seleção quando ela ainda existir na nova janela.
+        function rebuildMgrOptions() {
+            const prev = sel.value;
+            const list = allManagers(r.trainings);
+            sel.innerHTML = '<option value="__all__">Todos os gestores</option>' + list.map(m => '<option value="' + esc(m) + '">' + esc(m) + '</option>').join('');
+            sel.value = (prev && prev !== '__all__' && list.indexOf(prev) >= 0) ? prev : '__all__';
+        }
+        // Re-busca os relatórios na janela atual e redesenha o dashboard.
+        function reloadDash() {
+            content.innerHTML = '<div style="padding:26px;text-align:center;color:' + C.grey + ';font-size:14px;">⏳ Buscando ' + esc(windowPreviewText(currentFilter)) + '…</div>';
+            fetchReport((r2, err) => {
+                if (err || !r2) { content.innerHTML = '<div style="padding:26px;text-align:center;color:' + C.red + ';font-size:14px;">⚠️ Falha ao buscar o relatório.</div>'; return; }
+                r = r2; rebuildMgrOptions(); renderD();
+            });
+        }
         function renderD() {
+            if (currentProc === 'log' && !isOnb1()) currentProc = PROCESSES[0].key;   // ONB1 OFF → sem "Precisa logar"
             currentR = filterByManager(r, sel.value); styleProcBtns();
-            if (currentProc === 'badge') { viewR = currentR; content.innerHTML = buildBadgeHTML(currentR); }
+            const isLog = currentProc === 'log';
+            btnLimits.style.display = isLog ? 'none' : '';   // limites não se aplicam ao "Precisa logar"
+            btnFlt.style.display = isLog ? 'none' : '';
+            if (isLog) { viewR = currentR; content.innerHTML = buildLogHTML(currentR); }
+            else if (currentProc === 'badge') { viewR = currentR; content.innerHTML = buildBadgeHTML(currentR); }
             else { viewR = filterByProcess(currentR, currentProc); content.innerHTML = buildDashHTML(viewR); }
         }
         renderD();
@@ -679,8 +796,7 @@
         let exceeding = [], faltantes = [], lastSig = '', refreshing = false, activeTab = 'hora';
         function recompute() {
             exceeding = computeExceeding(curR.trainings);
-            const cmpTitles = compareTitles(curR);
-            faltantes = curR.allPeople.map(p => ({ p, falta: cmpTitles.filter(tt => !p.inset.has(tt)) })).filter(x => x.falta.length > 0);
+            faltantes = computeFaltantes(curR);   // calm codes de On Boarding (respeita o flag Onb Dia 1)
         }
         function sig() { return 'H|' + exceeding.map(e => (e.id || e.name) + ':' + e.total).join(',') + '||L|' + faltantes.map(x => (x.p.id || x.p.name) + ':' + x.falta.join('/')).join(','); }
         function fmtTime(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0'); }
@@ -707,19 +823,24 @@
         const btnRefresh = document.createElement('button'); btnRefresh.innerHTML = '🔄 Atualizar'; btnRefresh.title = 'Atualizar agora';
         btnRefresh.style.cssText = 'background:' + C.blue + ';color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-weight:700;font-size:12px;';
         btnRefresh.onclick = () => doRefresh(true);
+        // Flag "Onb Dia 1": muda a regra do "Precisa logar" (calm codes de On Boarding).
+        const btnOnb1 = document.createElement('button');
+        btnOnb1.title = 'Onboarding Dia 1: "Precisa logar" compara quem está em General FC Training com FC Safety Tour / Safety School';
+        const styleOnb1 = () => { const on = isOnb1(); btnOnb1.textContent = onb1Label(); btnOnb1.style.cssText = 'background:transparent;color:' + (on ? C.gold : '#8fa3b8') + ';border:1px solid ' + (on ? C.gold : 'rgba(255,255,255,.28)') + ';border-radius:5px;padding:3px 7px;cursor:pointer;font-weight:700;font-size:10px;letter-spacing:.02em;'; };
+        styleOnb1();
+        btnOnb1.onclick = () => { setOnb1(!isOnb1()); styleOnb1(); recompute(); updateTabLabels(); setActive(!isOnb1() && activeTab === 'log' ? 'hora' : activeTab); };
         const btnDet = document.createElement('button'); btnDet.innerHTML = '🔎 Mais detalhes'; btnDet.style.cssText = 'background:' + C.accent + ';color:#232F3E;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-weight:700;font-size:12px;'; btnDet.onclick = () => { ov.remove(); showDashboard(curR); };
         const x = document.createElement('button'); x.textContent = '✖'; x.style.cssText = 'background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;'; x.onclick = () => { ov.remove(); gmSet(OPEN_KEY, '0'); };
-        headBtns.appendChild(btnFlt); headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
+        headBtns.appendChild(btnFlt); headBtns.appendChild(btnOnb1); headBtns.appendChild(btnRefresh); headBtns.appendChild(btnDet); headBtns.appendChild(x); head.appendChild(headBtns);
         const tabs = document.createElement('div'); tabs.style.cssText = 'display:flex;flex-shrink:0;border-bottom:1px solid ' + C.border + ';background:#fff;';
         const tabHora = document.createElement('button'); const tabLog = document.createElement('button'); const tabTot = document.createElement('button');
         const tabBase = 'flex:1;border:none;padding:10px 8px;cursor:pointer;font-weight:700;font-size:13px;font-family:\'Amazon Ember\',Arial,sans-serif;background:#fff;';
-        function updateTabLabels() { tabHora.innerHTML = (limitByHours ? '⏰ ' : '📋 ') + listTitle() + ' (' + exceeding.length + ')'; tabLog.innerHTML = '🔁 Precisa logar (' + faltantes.length + ')'; tabTot.innerHTML = '📊 Horas totais (' + curR.trainings.length + ')'; }
+        function updateTabLabels() { tabHora.innerHTML = (limitByHours ? '⏰ ' : '📋 ') + listTitle() + ' (' + exceeding.length + ')'; tabLog.innerHTML = '🔁 Precisa logar (' + faltantes.length + ')'; tabTot.innerHTML = '📊 Horas totais (' + curR.trainings.length + ')'; tabLog.style.display = isOnb1() ? '' : 'none'; }
         updateTabLabels();
         const body = document.createElement('div'); body.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:12px 14px;background:' + C.bodyBg + ';';
-        const mgrHeader = (mgr) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';">👤 ' + esc(mgr) + '</div>';
         const fnHeader = (fn) => '<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:#fff;background:' + C.dark + ';padding:6px 10px;border-radius:6px;border-left:4px solid ' + C.accent + ';"><a href="' + reportUrl(processForTitle(fn)) + '" target="_blank" title="Abrir o relatório de onde veio esta informação" style="text-decoration:none;">🎓</a> ' + esc(fn) + '</div>';
-        function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; return; } const hClr = limitByHours ? C.red : C.blue; const by = groupByManager(exceeding, e => e.title || 'Sem função'); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += fnHeader(fn); by[fn].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span>' + (e.manager ? ' <span style="color:' + C.grey + ';font-size:12px;">(' + esc(e.manager) + ')</span>' : '') + '</div>'; }); }); body.innerHTML = html; }
-        function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const byT = {}; faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); })); let html = ''; Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => { html += fnHeader(t); byT[t].forEach(p => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + (p.manager ? ' <span style="color:' + C.grey + ';font-size:12px;">(' + esc(p.manager) + ')</span>' : '') + '</div>'; }); }); body.innerHTML = html; }
+        function renderHora() { if (!exceeding.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">' + (limitByHours ? 'Ninguém acima do limite ✅' : 'Nenhum associado nas funções que precisamos ✅') + '</div>'; return; } const hClr = limitByHours ? C.red : C.blue; const by = groupByManager(exceeding, e => e.title || 'Sem função'); let html = ''; Object.keys(by).sort((a, b) => a.localeCompare(b)).forEach(fn => { html += fnHeader(fn); by[fn].forEach(e => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(e.name, e.link) + ' — <span style="color:' + hClr + ';font-weight:700;">' + e.total.toFixed(2) + 'h</span></div>'; }); }); body.innerHTML = html; }
+        function renderLog() { if (!faltantes.length) { body.innerHTML = '<div style="font-size:13px;color:' + C.grey + ';">Todos presentes em todos ✅</div>'; return; } const byT = {}; faltantes.forEach(({ p, falta }) => falta.forEach(t => { (byT[t] = byT[t] || []).push(p); })); let html = ''; Object.keys(byT).sort((a, b) => a.localeCompare(b)).forEach(t => { html += fnHeader(t); byT[t].forEach(p => { html += '<div style="font-size:14px;padding:4px 0 4px 8px;border-bottom:1px solid #E8E8E8;color:' + C.dark + ';">' + nameLink(p.name, p.link) + '</div>'; }); }); body.innerHTML = html; }
         function renderTotals() {
             // Lista os treinamentos com dados; os zerados somem.
             const rows = EXPECTED_TOTALS.map(exp => {
@@ -743,7 +864,7 @@
             if (cbt) cbt.onclick = () => { navigator.clipboard.writeText(grandStr).then(() => { cbt.textContent = '✅'; setTimeout(() => { cbt.textContent = '📋'; }, 1500); }); };
         }
         function renderTab() { if (activeTab === 'hora') renderHora(); else if (activeTab === 'tot') renderTotals(); else renderLog(); }
-        function setActive(which) { activeTab = which; gmSet(ACTIVE_TAB_KEY, which); btnFlt.style.display = (which === 'hora') ? '' : 'none'; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabTot.style.cssText = tabBase + (which === 'tot' ? 'color:' + C.blue + ';border-bottom:3px solid ' + C.blue + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
+        function setActive(which) { if (which === 'log' && !isOnb1()) which = 'hora'; activeTab = which; gmSet(ACTIVE_TAB_KEY, which); btnFlt.style.display = (which === 'hora') ? '' : 'none'; tabHora.style.cssText = tabBase + (which === 'hora' ? 'color:' + C.red + ';border-bottom:3px solid ' + C.red + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); tabLog.style.cssText = tabBase + (which === 'log' ? 'color:' + C.amber + ';border-bottom:3px solid ' + C.amber + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;') + (isOnb1() ? '' : 'display:none;'); tabTot.style.cssText = tabBase + (which === 'tot' ? 'color:' + C.blue + ';border-bottom:3px solid ' + C.blue + ';' : 'color:' + C.grey + ';border-bottom:3px solid transparent;'); renderTab(); }
         // Re-busca o relatório e atualiza os números sem fechar o painel.
         function doRefresh(manual) {
             if (refreshing || !document.body.contains(ov)) return;
@@ -764,25 +885,36 @@
             });
         }
         tabHora.onclick = () => setActive('hora'); tabLog.onclick = () => setActive('log'); tabTot.onclick = () => setActive('tot');
-        tabs.appendChild(tabHora); tabs.appendChild(tabTot); // "Precisa logar" fora; "Horas totais" no lugar
+        tabs.appendChild(tabHora); tabs.appendChild(tabTot); tabs.appendChild(tabLog); // Precisa logar = visão rápida dos calm codes
 
         // Linha de filtro: Dia / Noite / Dia todo + data selecionável
         const fRow = document.createElement('div');
         fRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-shrink:0;padding:8px 14px;background:#fff;border-bottom:1px solid ' + C.border + ';';
         const selMode = document.createElement('select');
         selMode.style.cssText = 'flex:1;padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;cursor:pointer;';
-        [['day', '☀️ Dia (05:30–18:00)'], ['night', '🌙 Noite (18:00–05:30)'], ['d6to5', '🕕 (D-1)06:00–05:00 '], ['full', '🗓️ Dia todo (00:00–00:00)']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
+        [['full', '📅 Day (dia inteiro)'], ['week', '🗓️ Week (semana)'], ['day', '☀️ Intraday Dia (05:30–18:00)'], ['night', '🌙 Intraday Noite (18:00–05:30)'], ['d6to5', '🕕 Intraday (D-1)06:00–05:00']].forEach(([v, l]) => { const o = document.createElement('option'); o.value = v; o.textContent = l; if (currentFilter.mode === v) o.selected = true; selMode.appendChild(o); });
         const inpDate = document.createElement('input'); inpDate.type = 'date'; inpDate.value = currentFilter.date; inpDate.style.cssText = 'padding:6px 8px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
+        // Campos da SEMANA (número da week + ano) — só aparecem no modo Week.
+        const weekWrap = document.createElement('span'); weekWrap.style.cssText = 'display:flex;gap:5px;align-items:center;';
+        const wLbl = document.createElement('span'); wLbl.textContent = 'Wk'; wLbl.style.cssText = 'font-size:11px;font-weight:800;color:' + C.grey + ';';
+        const inpWeek = document.createElement('input'); inpWeek.type = 'number'; inpWeek.min = '1'; inpWeek.max = '53'; inpWeek.value = currentFilter.week; inpWeek.title = 'Número da semana (Dom–Sáb)'; inpWeek.style.cssText = 'width:54px;padding:6px 6px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
+        const inpYear = document.createElement('input'); inpYear.type = 'number'; inpYear.min = '2020'; inpYear.max = '2100'; inpYear.value = currentFilter.year; inpYear.title = 'Ano da semana'; inpYear.style.cssText = 'width:66px;padding:6px 6px;border:1px solid #CDD4DA;border-radius:6px;font-size:12px;';
+        weekWrap.appendChild(wLbl); weekWrap.appendChild(inpWeek); weekWrap.appendChild(inpYear);
         // Pré-visualização da janela resultante.
         const previewEl = document.createElement('div'); previewEl.style.cssText = 'flex-shrink:0;padding:2px 14px 8px;background:#fff;border-bottom:1px solid ' + C.border + ';font-size:11px;font-weight:700;color:' + C.blue + ';';
-        const syncPreview = () => { previewEl.textContent = '🗓️ ' + windowPreviewText({ mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }); };
-        const applyFilter = () => { currentFilter = { mode: selMode.value, date: inpDate.value || ymdDash(new Date()) }; saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
-        selMode.onchange = applyFilter; inpDate.onchange = applyFilter;
-        fRow.appendChild(selMode); fRow.appendChild(inpDate);
+        function readFilter() {
+            if (selMode.value === 'week') return { mode: 'week', date: currentFilter.date, week: Math.max(1, parseInt(inpWeek.value, 10) || 1), year: parseInt(inpYear.value, 10) || new Date().getFullYear() };
+            return { mode: selMode.value, date: inpDate.value || ymdDash(new Date()), week: currentFilter.week, year: currentFilter.year };
+        }
+        function syncVis() { const wk = selMode.value === 'week'; inpDate.style.display = wk ? 'none' : ''; weekWrap.style.display = wk ? 'flex' : 'none'; }
+        const syncPreview = () => { syncVis(); previewEl.textContent = '🗓️ ' + windowPreviewText(readFilter()); };
+        const applyFilter = () => { currentFilter = readFilter(); saveFilter(currentFilter); syncPreview(); const t = headLeft.querySelector('div'); if (t) t.innerHTML = modeLabel(currentFilter.mode) + ' Learning Hours'; doRefresh(true); };
+        selMode.onchange = applyFilter; inpDate.onchange = applyFilter; inpWeek.onchange = applyFilter; inpYear.onchange = applyFilter;
+        fRow.appendChild(selMode); fRow.appendChild(inpDate); fRow.appendChild(weekWrap);
         syncPreview();
 
         ov.appendChild(head); ov.appendChild(fRow); ov.appendChild(previewEl); ov.appendChild(tabs); ov.appendChild(body); document.body.appendChild(ov);
-        setActive(gmGet(ACTIVE_TAB_KEY, 'hora') === 'tot' ? 'tot' : 'hora');   // restaura última aba
+        setActive(['tot', 'log'].indexOf(gmGet(ACTIVE_TAB_KEY, 'hora')) >= 0 ? gmGet(ACTIVE_TAB_KEY, 'hora') : 'hora');   // restaura última aba
         lastSig = sig();
         // Sem auto-refresh: atualização só manual pelo botão "🔄 Atualizar".
     }
