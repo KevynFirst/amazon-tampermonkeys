@@ -1,16 +1,27 @@
 // ==UserScript==
 // @name         FCLM - Badge Barcode + Photo (GRU5)
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  No employeeRoster: digite/cole logins ou Employee IDs (ou importe um CSV com as colunas A e B). Pesquisar recarrega o relatório completo do GRU5 e devolve, numa tabela, o Badge Barcode ID em número, o código de barras Code 128 e a foto do crachá. Clique no cabeçalho da coluna para copiar os valores dela. Injeta também a coluna de barcode na tabela do FCLM. Fora do roster completo, "Pesquisar" carrega o link filtrado do GRU5 e a busca roda sozinha ao abrir.
-// @author       ladislke
+// @description  No employeeRoster: digite/cole logins ou Employee IDs (ou importe um CSV com as colunas A e B). Pesquisar recarrega o relatório completo do GRU5 e devolve, numa tabela, o Badge Barcode ID em número, o código de barras Code 128 e a foto do crachá. Clique no cabeçalho da coluna para copiar os valores dela. Injeta também a coluna de barcode na tabela do FCLM. O botão que abre o painel é a primeira linha da própria tabela (colado no cabeçalho, ocupando todas as colunas). Fora do roster completo, "Pesquisar" carrega o link filtrado do GRU5 e a busca roda sozinha ao abrir.
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
 // @match        https://fclm-portal.amazon.com/employee/employeeRoster*
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @version      1.5
+// @author       ladislke
+// @updateURL    https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/FCLM%20-%20Badge%20Barcode%20%2B%20Photo%20(GRU5)-1.3.user.js
+// @downloadURL  https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/FCLM%20-%20Badge%20Barcode%20%2B%20Photo%20(GRU5)-1.3.user.js
 // ==/UserScript==
+//
+// v1.4 — O acesso ao painel deixou de ser um botão flutuante no meio da lateral:
+//        virou uma barra no fluxo da página, acima do cabeçalho da tabela.
+// v1.5 — A barra passou a ser, literalmente, a PRIMEIRA LINHA da tabela: um <tr>
+//        inserido no mesmo container do cabeçalho, com um <td colspan> cobrindo
+//        todas as colunas (inclusive a de barcode injetada por este script).
+//        Fica colada no cabeçalho e acompanha a largura da tabela. Só quando não
+//        há tabela na página (tela de filtros) ela volta a ser uma caixa solta.
+//
 (function () {
     'use strict';
     if (window.top !== window.self) return;
@@ -22,7 +33,6 @@
         bg: '#EAEDED', card: '#FFFFFF', text: '#0F1111', sub: '#6B7178', red: '#D13212',
         border: '#D5D9D9', green: '#067D62',
         headerGrad: 'linear-gradient(135deg,#2C3E50 0%,#232F3E 55%,#131921 100%)',
-        ballGrad: 'linear-gradient(145deg,#FFB84D 0%,#FF9900 55%,#E88B00 100%)',
     };
     const FONT = "'Segoe UI',Roboto,Arial,sans-serif";
     const MONO = "Consolas,'Courier New',monospace";
@@ -427,10 +437,22 @@ label.btBtn{display:inline-block;line-height:normal}
 .btPill{display:inline-block;background:#EDEFEF;border-radius:10px;padding:1px 7px;font-size:10px;color:${C.sub}}
 .btPill.ok{background:#E4F5EF;color:${C.green}}
 .btPill.no{background:#FDECEA;color:${C.red}}
-#btBall{position:fixed;right:14px;top:50%;transform:translateY(-50%);z-index:2147483000;width:46px;height:46px;border-radius:50%;
-  border:0;cursor:pointer;background:${C.ballGrad};color:${C.navy};font-family:${FONT};font-weight:800;font-size:11px;
-  box-shadow:0 4px 14px rgba(0,0,0,.28)}
-#btBall:hover{filter:brightness(1.05)}
+/* Barra de acesso = PRIMEIRA LINHA da tabela do roster (um <tr> com um <td>
+   ocupando todas as colunas), colada no cabeçalho, sem margem nem borda solta. */
+tr#btBarRow{background:transparent}
+td#btBarCell{padding:0 !important;border:0 !important;border-bottom:2px solid ${C.orange} !important;
+  background:${C.card};text-align:left !important}
+#btBarInner{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:7px 9px;
+  background:linear-gradient(180deg,#FFFFFF 0%,#F5F6F7 100%);font-family:${FONT}}
+#btBarBtn{display:inline-flex;align-items:center;gap:8px;background:${C.orange};color:${C.navy};border:0;
+  border-radius:6px;padding:7px 13px;font-family:${FONT};font-size:13px;font-weight:800;cursor:pointer;line-height:1.2}
+#btBarBtn:hover{background:${C.orangeH}}
+#btBarBtn.on{background:${C.header};color:#fff}
+#btBarBtn .ico{font-size:14px;line-height:1}
+#btBarInfo{font-size:11px;color:${C.sub}}
+/* Fallback: quando não há tabela na página, a barra vira uma caixa no fluxo */
+#btBar{margin:10px 0 6px;border:1px solid ${C.border};border-left:4px solid ${C.orange};
+  border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 #btZoom{position:fixed;inset:0;z-index:2147483600;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;cursor:zoom-out}
 #btZoom img{max-width:92vw;max-height:92vh;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.5)}
 .btPageTh{white-space:nowrap}
@@ -445,14 +467,68 @@ label.btBtn{display:inline-block;line-height:normal}
     // ════════════════════════════════════════════════════════════════════
     let ROSTER = { ok: false, rows: [] }, IDX = { byEmp: new Map(), byUser: new Map() };
     let LAST = [], PENDING = '';
-    let panel = null, ball = null;
-    const state = { width: clamp(+gv(K_W, 560), 360, 1000), bulk: '' };
+    let panel = null, barInner = null, barRow = null, barCell = null, barBox = null, barBtn = null, barInfo = null;
+    const state = { width: clamp(+gv(K_W, 560), 360, 1000), bulk: '', open: false };
 
     function setOpen(open) {
+        state.open = !!open;
         sv(K_OPEN, !!open);
         if (panel) panel.style.display = open ? 'flex' : 'none';
-        if (ball) ball.style.display = open ? 'none' : 'block';
         document.body.style.paddingRight = open ? state.width + 'px' : '';
+        updateBar();
+    }
+
+    // ── Barra = primeira linha da própria tabela ──────────────────────────
+    // Nada flutuando e nada solto: a barra é um <tr> inserido no mesmo container
+    // do cabeçalho, logo antes dele, com um <td colspan> ocupando todas as
+    // colunas — inclusive a coluna de barcode que este script injeta. Assim ela
+    // encosta no cabeçalho e acompanha a largura da tabela.
+    // Sem tabela na página (tela de filtros), cai para uma caixa no fluxo.
+    function ensureBarRow() {
+        if (barRow) return;
+        barRow = document.createElement('tr');
+        barRow.id = 'btBarRow';
+        barCell = document.createElement('td');
+        barCell.id = 'btBarCell';
+        barRow.appendChild(barCell);
+    }
+    function ensureBarBox() {
+        if (barBox) return;
+        barBox = document.createElement('div');
+        barBox.id = 'btBar';
+    }
+    function placeBar() {
+        if (!barInner) return;
+        const hr = (ROSTER.ok && ROSTER.table) ? headerRow(ROSTER.table) : null;
+        if (hr && hr.parentNode) {
+            ensureBarRow();
+            if (barCell.firstChild !== barInner) barCell.appendChild(barInner);
+            // colspan é recalculado a cada carga (a coluna de barcode entra antes daqui)
+            barCell.colSpan = Math.max(1, hr.children.length);
+            if (hr.previousElementSibling !== barRow) hr.parentNode.insertBefore(barRow, hr);
+            if (barBox && barBox.parentNode) barBox.remove();   // sai do modo caixa
+            return;
+        }
+        // Fallback: caixa no fluxo, antes da tabela/formulário ou no topo do body.
+        ensureBarBox();
+        if (barBox.firstChild !== barInner) barBox.appendChild(barInner);
+        if (barRow && barRow.parentNode) barRow.remove();
+        const ref = pickTable() || document.querySelector('form');
+        if (ref && ref.parentNode) {
+            if (barBox.nextElementSibling !== ref) ref.parentNode.insertBefore(barBox, ref);
+        } else if (barBox.parentNode !== document.body) {
+            document.body.insertBefore(barBox, document.body.firstChild);
+        }
+    }
+    function updateBar() {
+        if (!barBtn) return;
+        const lb = barBtn.querySelector('.lb');
+        if (lb) lb.textContent = state.open ? 'Fechar painel' : 'Badge Barcode + Photo';
+        barBtn.classList.toggle('on', !!state.open);
+        barBtn.title = state.open ? 'Fechar o painel' : 'Abrir o painel de Badge Barcode + Photo';
+        if (barInfo) barInfo.textContent = ROSTER.ok
+            ? (ROSTER.rows.length + ' funcionários nesta tabela · busque o barcode e a foto por login ou Employee ID')
+            : 'tabela do roster ainda não lida — abra o painel para carregar o roster do GRU5';
     }
 
     function toast(msg, bad) {
@@ -485,12 +561,15 @@ label.btBtn{display:inline-block;line-height:normal}
 <div id="btFoot"><span id="btFootTxt"></span></div>`;
         document.body.appendChild(panel);
 
-        ball = document.createElement('button');
-        ball.id = 'btBall';
-        ball.title = 'Abrir Badge Barcode + Photo';
-        ball.textContent = 'BADGE';
-        ball.onclick = () => setOpen(true);
-        document.body.appendChild(ball);
+        // Conteúdo da barra. O placeBar() decide se ele vai dentro de um <td>
+        // (primeira linha da tabela) ou de uma caixa no fluxo (sem tabela).
+        barInner = document.createElement('div');
+        barInner.id = 'btBarInner';
+        barInner.innerHTML = '<button type="button" id="btBarBtn"><span class="ico">🏷️</span><span class="lb">Badge Barcode + Photo</span></button>'
+            + '<span id="btBarInfo"></span>';
+        barBtn = barInner.querySelector('#btBarBtn');
+        barInfo = barInner.querySelector('#btBarInfo');
+        barBtn.onclick = () => setOpen(!state.open);
 
         panel.querySelector('#btClose').onclick = () => setOpen(false);
         panel.querySelector('#btReload').onclick = () => load();
@@ -510,6 +589,7 @@ label.btBtn{display:inline-block;line-height:normal}
         });
 
         setOpen(gv(K_OPEN, true) !== false);
+        placeBar();   // load() reposiciona depois, quando a tabela do roster for lida
     }
 
     // ── Utilidades ──────────────────────────────────────────────────────
@@ -804,6 +884,8 @@ ${results}`;
             render();
         }
         injectPageCol();
+        placeBar();    // ancora a barra logo acima do cabeçalho da tabela lida
+        updateBar();
     }
 
     function init() {
