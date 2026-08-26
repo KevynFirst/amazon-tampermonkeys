@@ -1,12 +1,18 @@
 // ==UserScript==
 // @name         FCLM Intradays
 // @namespace    http://tampermonkey.net/
-// @version      4.0
-// @description  Add intraday(s) buttons + SELECT ALL no employeeRoster + link TOT/HC + ícones de busca no Time Details
+// @version      4.1
+// @description  Add intraday(s) buttons + SELECT ALL no employeeRoster + link TOT/HC + ícones de busca nas páginas de employee (timeDetails / activityDetails / permissions / ppaTimeDetails)
 // @author       ladislke
 // @match        https://fclm-portal.amazon.com/*
+// @match        https://fclm-portal.amazon.com/employee/activityDetails*
+// @match        https://fclm-portal.amazon.com/employee/timeDetails*
+// @match        https://fclm-portal.amazon.com/employee/permissions*
+// @match        https://fclm-portal.amazon.com/employee/ppaTimeDetails*
 // @icon         https://fclm-portal.amazon.com/resources/images/icon.jpg
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/FCLM%20Intradays-3.7.user.js
+// @downloadURL  https://raw.githubusercontent.com/KevynFirst/amazon-tampermonkeys/main/FCLM%20Intradays-3.7.user.js
 // ==/UserScript==
 // v2.x — Botões Day -1 / Day Shift / Night Shift com estilo Amazon; active-shift outline
 // v2.6 — Autor ladislke; exclusão ppaTimeOnTask do interval
@@ -25,6 +31,10 @@
 //        /html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[1]; warehouseId vem da URL.
 //        Também mostra o login do manager na frente do nome (dd[6]/a) — buscado na
 //        própria página do manager, já que o href só traz o ID — com botão de copiar.
+// v4.1 — Ícones de busca + tag de login do manager agora aparecem em TODAS as páginas
+//        de employee: activityDetails, timeDetails, permissions e ppaTimeDetails.
+//        Localização do Login/Manager passa a ser por rótulo (<dt>Login</dt> → <dd>),
+//        com o XPath absoluto antigo apenas como fallback (o layout varia entre páginas).
 
 
 // Horários dos turnos
@@ -459,13 +469,27 @@ var interval = setInterval(function(){
 
 
 
-// ── v3.8: Ícones de busca (login) na página Time Details ────────────────
-// Na página /employee/timeDetails, injeta 3 ícones ao lado do login do
-// associado, abrindo as MESMAS ferramentas de busca do Acompanhamento LC:
-//   📦 Guided Coaching (transcript)  🛒 Picking Console  � FMC Inbound (Stow)
-// O login é lido do XPath informado; o warehouseId (FC) vem da URL.
+// ── v3.8 / v4.1: Ícones de busca (login) nas páginas de employee ────────
+// Em /employee/activityDetails, /employee/timeDetails, /employee/permissions
+// e /employee/ppaTimeDetails, injeta 3 ícones ao lado do login do associado,
+// abrindo as MESMAS ferramentas de busca do Acompanhamento LC:
+//   📦 Guided Coaching (transcript)  🛒 Picking Console  📥 FMC Inbound (Stow)
+// O login é lido do bloco <dl> do cabeçalho; o warehouseId (FC) vem da URL.
 (function injectTimeDetailsSearch() {
-    if (!window.location.pathname.startsWith('/employee/timeDetails')) return;
+    var PAGE_PREFIXES = [
+        '/employee/activityDetails',
+        '/employee/timeDetails',
+        '/employee/permissions',
+        '/employee/ppaTimeDetails'
+    ];
+    function paginaSuportada() {
+        var p = window.location.pathname;
+        for (var i = 0; i < PAGE_PREFIXES.length; i++) {
+            if (p.indexOf(PAGE_PREFIXES[i]) === 0) return true;
+        }
+        return false;
+    }
+    if (!paginaSuportada()) return;
 
     var LOGIN_XPATH = '/html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[1]';
 
@@ -474,13 +498,33 @@ var interval = setInterval(function(){
         return (wh || 'GRU9').trim();
     }
 
-    function getLoginNode() {
+    // Acha o <dd> cujo <dt> anterior casa com o regex (ex.: /^login/i, /manager/i).
+    // Mais robusto que XPath absoluto, pois o layout varia entre as páginas.
+    function ddPorRotulo(re, doc) {
+        var d = doc || document;
+        var dls = d.querySelectorAll('dl');
+        for (var i = 0; i < dls.length; i++) {
+            var kids = dls[i].children;
+            for (var j = 0; j < kids.length; j++) {
+                if (kids[j].tagName !== 'DT') continue;
+                if (!re.test(String(kids[j].textContent || '').trim())) continue;
+                var n = kids[j].nextElementSibling;
+                while (n && n.tagName !== 'DD') n = n.nextElementSibling;
+                if (n) return n;
+            }
+        }
+        return null;
+    }
+
+    function xpathNode(xp, doc) {
+        var d = doc || document;
         try {
-            return document.evaluate(
-                LOGIN_XPATH, document, null,
-                XPathResult.FIRST_ORDERED_NODE_TYPE, null
-            ).singleNodeValue;
+            return d.evaluate(xp, d, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
         } catch (e) { return null; }
+    }
+
+    function getLoginNode() {
+        return ddPorRotulo(/^login\b/i) || xpathNode(LOGIN_XPATH);
     }
 
     function getLogin(node) {
@@ -494,12 +538,9 @@ var interval = setInterval(function(){
     // na própria página do manager (mesmo XPath do associado, dd[1]).
     var MANAGER_XPATH = '/html/body/table/tbody/tr[2]/td[2]/div/dl[1]/dd[6]/a';
     function getManagerNode() {
-        try {
-            return document.evaluate(
-                MANAGER_XPATH, document, null,
-                XPathResult.FIRST_ORDERED_NODE_TYPE, null
-            ).singleNodeValue;
-        } catch (e) { return null; }
+        var dd = ddPorRotulo(/manager/i);
+        var a  = dd ? dd.querySelector('a') : null;
+        return a || xpathNode(MANAGER_XPATH);
     }
 
     // "login-like" = tem letra e não é só número (evita pegar o ID numérico).
@@ -534,10 +575,7 @@ var interval = setInterval(function(){
                     if (!html) { resolve(''); return; }
                     try {
                         var doc = new DOMParser().parseFromString(html, 'text/html');
-                        var n = doc.evaluate(
-                            LOGIN_XPATH, doc, null,
-                            XPathResult.FIRST_ORDERED_NODE_TYPE, null
-                        ).singleNodeValue;
+                        var n = ddPorRotulo(/^login\b/i, doc) || xpathNode(LOGIN_XPATH, doc);
                         resolve(n ? String(n.textContent || '').trim() : '');
                     } catch (e) { resolve(''); }
                 })
@@ -656,14 +694,16 @@ var interval = setInterval(function(){
     `;
     document.head.appendChild(tdStyle);
 
+    var tentativas = 0;
     var poll = setInterval(function() {
         if (document.getElementById('lc-td-tools')) { clearInterval(poll); return; }
+        if (++tentativas > 50) { clearInterval(poll); return; } // ~15s e desiste
         var node = getLoginNode();
         if (!node) return; // ainda carregando
 
         var login = getLogin(node);
         clearInterval(poll);
-        if (!login) return;
+        if (!pareceLogin(login)) return; // não é um login (evita injetar em ID numérico)
 
         var fc = getWarehouseId();
         var wrap = document.createElement('span');
